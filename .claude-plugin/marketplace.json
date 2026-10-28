@@ -1,0 +1,6 @@
+{
+  "name": "run-pane",
+  "description": "A Run pane for Claude Code: run dev servers and other commands beside the chat",
+  "owner": { "name": "jaichandra" },
+  "plugins": [{ "name": "run-pane", "source": "./" }]
+}

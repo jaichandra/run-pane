@@ -1,0 +1,11 @@
+{
+  "name": "run-pane",
+  "version": "0.1.0",
+  "description": "A Run pane for Claude Code: start, watch and stop dev servers, test runs and other commands in a pane beside the chat, let Claude read their output, and open a shell in the same folder",
+  "author": {
+    "name": "jaichandra"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "keywords": ["mod", "pane", "run", "dev-server"]
+}
