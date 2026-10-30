@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- The prompt box is cleared after a `> <command>` runs, ready for the next one.
+
 ## 0.1.1
 
 - `/dev` is removed; use the `>` prompt prefix. Typing `>` into an empty prompt now adds a space after it.
