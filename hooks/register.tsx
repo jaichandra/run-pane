@@ -252,18 +252,23 @@ async function openShell($: EngineInterface): Promise<string> {
   }
 }
 
+// Columns the pane asks for while docked beside a fullscreen transcript (the engine caps it at 45%).
+const DOCK_COLUMNS = 60
+
 // What `/rp` does: open the pane, and start the command if there is one.
-async function runPrompt($: EngineInterface, args: string): Promise<string> {
+async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean): Promise<string> {
   const cmd = args.trim()
   if (cmd === 'close') {
     await $.ui.close({ id: PANE })
     return 'Run pane closed. Commands keep running; /rp shows them again.'
   }
-  const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true })
+  const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true, columns: DOCK_COLUMNS })
   showStatus($)
-  if (cmd === '') return placed.isPlaced ? 'Run pane opened.' : 'The Run pane needs a wider terminal (about 110 columns) or the fullscreen layout.'
+  // Docked beside the transcript only in the fullscreen layout; otherwise it sits above the prompt.
+  const hint = placed.isPlaced && !isFullscreen ? ' Open Claude Code fullscreen to dock it beside the chat.' : ''
+  if (cmd === '') return placed.isPlaced ? `Run pane opened.${hint}` : 'The Run pane needs a wider terminal (about 110 columns) or the fullscreen layout.'
   const run = await start($, cmd)
-  return `Started #${run.id}: ${cmd}${placed.isPlaced ? '' : ' (the Run pane needs a wider terminal to show it)'}`
+  return `Started #${run.id}: ${cmd}${placed.isPlaced ? hint : ' (the Run pane needs a wider terminal to show it)'}`
 }
 
 const open = (id: number): Run | undefined => runs.find(run => run.id === id)
@@ -300,7 +305,7 @@ export const register: Register = on => {
   })
 
   // `/rp npm run dev` runs a command in the pane, `/rp` opens it, `/rp close` closes it.
-  on('command.run', { command: 'rp' }, async ($, e) => ({ text: await runPrompt($, e.args) }))
+  on('command.run', { command: 'rp' }, async ($, e) => ({ text: await runPrompt($, e.args, e.presentation?.isFullscreen === true) }))
 
   on('command.run', { command: 'shell' }, async $ => ({ text: await openShell($) }))
 

@@ -16,6 +16,7 @@ const PANE = {
 } as const
 
 const status: (string | undefined)[] = []
+const openedColumns: (number | undefined)[] = []
 
 // What the person's `/rp <command>` does; the answer's `text` is what the pane tells them.
 const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) => ({
@@ -33,6 +34,7 @@ function engine(
   on('tool.register', () => ({ value: { tool: 'mcp__run-pane__run_output' } }))
   on('ui.open', (_, e) => {
     process.opened?.push(e.id)
+    openedColumns.push(e.columns)
     return { value: { isPlaced: true } }
   })
   on('ui.close', () => ({ value: undefined }))
@@ -74,6 +76,19 @@ test('/rp starts a command and the pane lists it with its output and a Stop', as
   expect(await ui.find({ key: 'stop:1' })).toBeDefined()
   expect(await ui.find({ key: 'hint:npm run test' })).toBeDefined()
   await ui.unmount()
+})
+
+test('/rp asks for a 60 column dock and says to go fullscreen when the pane is inline', async ($, on) => {
+  const process = { calls: [] as string[][], lines: [] }
+  engine(on, process)
+  openedColumns.length = 0
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+
+  expect(openedColumns).toEqual([])
+  const opened = await gt($, '')
+  expect(openedColumns).toEqual([60])
+  expect(opened.text).toContain('Open Claude Code fullscreen to dock it beside the chat.')
+  expect((await gt($, 'npm run dev')).text).toContain('Open Claude Code fullscreen')
 })
 
 test('a prompt starting with > is left alone, for the model to read', async ($, on) => {

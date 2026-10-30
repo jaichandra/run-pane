@@ -51,7 +51,7 @@ Answer `y` to add the marketplace, then pick a scope (the first, user scope, kee
 
 ### Requirements
 
-- Works in the terminal (CLI) session, which is where it is known to work. The pane docks beside the transcript in the fullscreen layout, or needs a terminal about 110 columns wide; `/rp` tells you when it cannot place the pane.
+- Works in the terminal (CLI) session, which is where it is known to work. To get the pane on the right of the chat, run Claude Code in its fullscreen layout; otherwise it sits above the prompt (and `/rp` says so). The pane docks beside the transcript in the fullscreen layout, or needs a terminal about 110 columns wide; `/rp` tells you when it cannot place the pane.
 - `/rp` runs commands through `sh`, `ps` and `kill`: macOS and Linux, not Windows.
 - `/shell` is macOS only.
 
