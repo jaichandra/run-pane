@@ -54,6 +54,7 @@ function engine(on: On, machine: Machine): void {
     return { value: undefined }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.end', () => ({ sessionId: 's1' }))
   on('session.cwd', () => ({ value: '/w/sample-app' }))
   // A real tick, so a pane polled forever does not starve the test of the turns it needs to press a button.
   on('clock.sleep', async () => {
@@ -385,4 +386,40 @@ test('a busy pane of the person gets a new one', async ($, on) => {
   machine.screen = cmd => ({ text: `${PROMPT} ${cmd}\n`, isBusy: true })
   await gt($, 'make b')
   expect(machine.calls.filter(argv => argv[1] === 'split-window')[1]).toEqual(['tmux', 'split-window', '-d', '-v', '-P', '-F', '#{pane_id}', '-c', '/w/sample-app', '-t', '%1'])
+})
+
+const ending = (reason: 'prompt_input_exit' | 'clear') => ({ reason, sessionId: 's1', resume: { id: 's1' } }) as never
+
+test('leaving the session closes every pane the mod opened, runs and /shell ones, and nothing else', async ($, on) => {
+  const machine = machineOf({ env: HERDR, screen: cmd => ({ text: `${PROMPT} ${cmd}\nready\n`, isBusy: true }) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm run dev')
+  await gt($, 'npm run lint')
+  await $.command.run({ command: 'shell', args: '' })
+  const before = machine.calls.length
+
+  await $.session.end(ending('prompt_input_exit'))
+  const closed = machine.calls.slice(before).filter(argv => argv[2] === 'close').map(argv => argv[3])
+  expect(closed.sort()).toEqual(['w1:p1', 'w1:p2', 'w1:p3'])
+  // Not asked to stop first: the exit has about a second.
+  expect(machine.calls.slice(before).some(argv => argv[2] === 'send-keys')).toBe(false)
+})
+
+test('a /clear keeps the panes, and a pane already closed is not closed twice', async ($, on) => {
+  const machine = machineOf({ env: TMUX, screen: finishing() })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'make')
+  await $.session.end(ending('clear'))
+  expect(machine.calls.some(argv => argv[1] === 'kill-pane')).toBe(false)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.find({ key: 'remove:1' })
+  await ui.press({ key: 'remove:1' })
+  const closedBefore = machine.calls.filter(argv => argv[1] === 'kill-pane').length
+  await $.session.end(ending('prompt_input_exit'))
+  expect(closedBefore).toBe(1)
+  expect(machine.calls.filter(argv => argv[1] === 'kill-pane')).toHaveLength(1)
+  await ui.unmount()
 })

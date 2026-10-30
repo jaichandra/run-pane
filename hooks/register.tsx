@@ -72,6 +72,8 @@ const folderName = (cwd: string): string => cwd.split('/').filter(Boolean).pop()
 const runs: Run[] = []
 // The pane the last run went to: the next one is split from it, so the runs stack in one column.
 let lastPane: { mux: Mux; id: string } | undefined
+// Every pane this mod made, for runs and for /shell: they close when the session ends.
+const opened = new Map<string, Mux>()
 const hints = new Map<string, string[]>()
 let seq = 0
 let isRedrawQueued = false
@@ -216,6 +218,7 @@ const MUX_MS = 5_000
 const GONE_POLLS = 3
 
 async function closePane($: EngineInterface, mux: Mux, pane: string): Promise<void> {
+  opened.delete(pane)
   if (lastPane?.id === pane) lastPane = undefined
   await $.process.run(driver(mux).close(pane), { timeoutMs: MUX_MS }).catch(() => undefined)
 }
@@ -260,7 +263,10 @@ async function splitPane($: EngineInterface, mux: Mux, cwd: string): Promise<str
   const parent = lastPane?.mux === mux ? lastPane.id : undefined
   // The last pane may have been closed since: then start a column again.
   const id = (parent ? await split(parent).catch(() => undefined) : undefined) ?? (await split(undefined))
-  if (id) lastPane = { mux, id }
+  if (id) {
+    lastPane = { mux, id }
+    opened.set(id, mux)
+  }
   return id
 }
 
@@ -393,7 +399,11 @@ async function openShell($: EngineInterface): Promise<string> {
     if (mux) {
       const folder = await $.session.cwd()
       const made = await $.process.run(driver(mux).split({ direction: 'right', cwd: folder, focus: true }), { cwd: folder, timeoutMs: MUX_MS })
-      if (made.exitCode === 0) return `Opened a shell pane in ${mux}: ${folder}`
+      if (made.exitCode === 0) {
+        const id = driver(mux).paneId(made.stdout)
+        if (id) opened.set(id, mux)
+        return `Opened a shell pane in ${mux}: ${folder}`
+      }
       return `Could not open a pane in ${mux}: ${oneLine(made.stderr || made.stdout) || `it exited with ${made.exitCode}`}`
     }
     const system = await $.process.run(['uname', '-s'], { timeoutMs: 3_000 }).catch(() => undefined)
@@ -495,7 +505,14 @@ export const register: Register = on => {
   }).catch((_$, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
-    await Promise.all(runs.filter(run => run.status === 'running').map(run => stop($, run)))
+    // The person left: the panes this mod opened go with the session, and what runs in them with them. The
+    // exit has about a second, so they are closed at once, not asked to stop first; a /clear or a resume
+    // goes on in the same process, and keeps its panes.
+    const isLeaving = e.reason !== 'clear' && e.reason !== 'resume'
+    await Promise.all([
+      ...runs.filter(run => run.status === 'running' && !(isLeaving && run.pane)).map(run => stop($, run)),
+      ...(isLeaving ? [...opened].map(([pane, mux]) => closePane($, mux, pane)) : []),
+    ])
     return next(e)
   })
 
