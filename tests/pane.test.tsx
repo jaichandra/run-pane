@@ -17,8 +17,10 @@ const PANE = {
 
 const status: (string | undefined)[] = []
 
-const typed = (command: string, args: string) =>
-  ({ command, args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } }) as const
+// What the person's `> <command>` prompt does; the answer's `text` is what the pane tells them.
+const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) => ({
+  text: (await $.prompt.submit({ text: `>${args ? ' ' + args : ''}`, origin: { kind: 'composer' }, wait: false })).drop,
+})
 
 // Stands for the engine beneath the mod: the calls the mod makes are answered here.
 function engine(
@@ -59,12 +61,12 @@ function engine(
   })
 }
 
-test('/dev starts a command and the pane lists it with its output and a Stop', async ($, on) => {
+test('a > prompt starts a command and the pane lists it with its output and a Stop', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready on :3000\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
-  const ran = await $.command.run(typed('dev', 'npm run dev'))
+  const ran = await gt($, 'npm run dev')
   expect(ran.text).toContain('Started #1: npm run dev')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
@@ -91,16 +93,16 @@ test('the status line keeps /shell while a command runs', async ($, on) => {
   engine(on, process)
   status.length = 0
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
-  await $.command.run(typed('dev', 'npm run dev'))
-  expect(status.at(-1)).toBe('\u25b6 1 running \u00b7 /dev \u00b7 > \u00b7 /shell')
-  expect(status[0]).toBe('\u25b6 /dev \u00b7 > \u00b7 /shell')
+  await gt($, 'npm run dev')
+  expect(status.at(-1)).toBe('\u25b6 1 running \u00b7 > \u00b7 /shell')
+  expect(status[0]).toBe('\u25b6 > \u00b7 /shell')
 })
 
 test('the buttons are on top and again below the output', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
-  await $.command.run(typed('dev', 'docker compose up'))
+  await gt($, 'docker compose up')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ key: 'stop:1' })).toBeDefined()
@@ -119,7 +121,7 @@ test('Stop signals the whole process tree and the run reads stopped', async ($, 
   engine(on, process)
   on('clock.sleep', () => ({ value: undefined }))
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
-  await $.command.run(typed('dev', 'npm run dev'))
+  await gt($, 'npm run dev')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'stop:1' })
@@ -137,7 +139,7 @@ test('the run_output tool returns the tail of a run for Claude', async ($, on) =
   const process = { calls: [] as string[][], lines: ['one\n', 'two\n', 'Error: port 3000 in use\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
-  await $.command.run(typed('dev', 'npm run dev'))
+  await gt($, 'npm run dev')
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.find({ type: 'Text', text: /port 3000/ })
   await ui.unmount()
@@ -152,13 +154,13 @@ test('the run_output tool returns the tail of a run for Claude', async ($, on) =
   expect(text).not.toContain('one')
 })
 
-test('the pane closes from /dev close and from its Close button, and the runs go on', async ($, on) => {
+test('the pane closes from > close and from its Close button, and the runs go on', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
-  await $.command.run(typed('dev', 'npm run dev'))
+  await gt($, 'npm run dev')
 
-  const ran = await $.command.run(typed('dev', 'close'))
+  const ran = await gt($, 'close')
   expect(ran.text).toContain('Run pane closed')
   expect(ran.text).not.toContain('Started')
 
@@ -177,7 +179,7 @@ test('suggestions from run-pane.json come first', async ($, on) => {
     'run-pane.json': '{"suggestions":["docker compose up","make seed"]}',
   })
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
-  await $.command.run(typed('dev', ''))
+  await gt($, '')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ key: 'hint:docker compose up' })).toBeDefined()
@@ -211,7 +213,7 @@ test('the output is coloured: a URL underlined, notes dim, a banner green', asyn
   }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
-  await $.command.run(typed('dev', 'docker compose up'))
+  await gt($, 'docker compose up')
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
@@ -239,8 +241,24 @@ for (const [name, files] of [
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     expect(await ui.find({ key: 'hint:npm run dev' })).toBeDefined()
     await ui.unmount()
-    // No words, so the pane waits for /dev and git is never asked.
+    // No words, so the pane waits for a > prompt and git is never asked.
     expect(process.opened).toEqual([])
     expect(process.calls.filter(argv => argv[0] === 'git')).toEqual([])
   })
 }
+
+test('typing > into an empty prompt leaves a space after it, and only then', async ($, on) => {
+  const process = { calls: [] as string[][], lines: [] }
+  engine(on, process)
+  on('prompt.edit', (_, e) => {
+    const text = e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end)
+    return { text, cursor: e.start + e.inputText.length }
+  })
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+
+  const edit = (text: string, inputText: string) =>
+    $.prompt.edit({ origin: { kind: 'composer' }, text, cursor: text.length, start: text.length, end: text.length, inputText })
+  expect(await edit('', '>')).toMatchObject({ text: '> ', cursor: 2 })
+  expect(await edit('a', '>')).toMatchObject({ text: 'a>' })
+  expect(await edit('', 'x')).toMatchObject({ text: 'x' })
+})
