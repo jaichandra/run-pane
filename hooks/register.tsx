@@ -518,7 +518,10 @@ export const register: Register = on => {
     return next(e)
   }).catch((_$, e, next) => next(e))
 
+  // A /clear ends the conversation but not the process, and no `session.start` follows, so the runs
+  // and their panes carry on untouched.
   on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') return next(e)
     // The person left: the panes this mod opened go with the session, and what runs in them with them. The
     // exit has about a second, so they are closed at once, not asked to stop first; a /clear or a resume
     // goes on in the same process, and keeps its panes.
