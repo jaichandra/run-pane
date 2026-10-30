@@ -91,6 +91,20 @@ test('/rp asks for a 60 column dock and says how to go fullscreen when the pane 
   expect((await gt($, 'npm run dev')).text).toContain('CLAUDE_CODE_NO_FLICKER=1')
 })
 
+test('an inline pane shows the fullscreen hint in the error colour, a docked one does not', async ($, on) => {
+  const process = { calls: [] as string[][], lines: [] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+
+  const inline = await $.ui.mount({ ...PANE, props: { ...PANE.props, placement: 'inline' }, surface: 'terminal' })
+  expect((await inline.find({ type: 'Text', text: /CLAUDE_CODE_NO_FLICKER=1 claude/ }))?.props?.color).toBe('error')
+  await inline.unmount()
+
+  const docked = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await docked.find({ type: 'Text', text: /CLAUDE_CODE_NO_FLICKER/ })).toBeUndefined()
+  await docked.unmount()
+})
+
 test('a prompt starting with > is left alone, for the model to read', async ($, on) => {
   const process = { calls: [] as string[][], lines: [] }
   engine(on, process)

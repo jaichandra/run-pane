@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- When the pane sits above the prompt, it shows the `CLAUDE_CODE_NO_FLICKER=1 claude` hint in bold red at its top, where it is hard to miss. The `/rp` reply keeps its plain-text hint (the transcript line cannot be coloured).
+
 ## 0.2.2
 
 - The `/rp` hint for an inline pane now names the fix: start Claude Code with `CLAUDE_CODE_NO_FLICKER=1 claude` to dock the pane on the right.

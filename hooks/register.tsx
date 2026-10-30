@@ -255,6 +255,9 @@ async function openShell($: EngineInterface): Promise<string> {
 // Columns the pane asks for while docked beside a fullscreen transcript (the engine caps it at 45%).
 const DOCK_COLUMNS = 60
 
+// Said when the pane sits above the prompt: only the fullscreen layout docks it on the right.
+const DOCK_HINT = 'To dock it on the right, restart with CLAUDE_CODE_NO_FLICKER=1 claude.'
+
 // What `/rp` does: open the pane, and start the command if there is one.
 async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean): Promise<string> {
   const cmd = args.trim()
@@ -265,7 +268,7 @@ async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean
   const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true, columns: DOCK_COLUMNS })
   showStatus($)
   // Docked beside the transcript only in the fullscreen layout; otherwise it sits above the prompt.
-  const hint = placed.isPlaced && !isFullscreen ? ' To dock it on the right, restart with CLAUDE_CODE_NO_FLICKER=1 claude.' : ''
+  const hint = placed.isPlaced && !isFullscreen ? ` ${DOCK_HINT}` : ''
   if (cmd === '') return placed.isPlaced ? `Run pane opened.${hint}` : 'The Run pane needs a wider terminal (about 110 columns) or the fullscreen layout.'
   const run = await start($, cmd)
   return `Started #${run.id}: ${cmd}${placed.isPlaced ? hint : ' (the Run pane needs a wider terminal to show it)'}`
@@ -410,6 +413,11 @@ export const register: Register = on => {
         <Text bold wrap="truncate-start">
           {folderName(cwd)}
         </Text>
+        {e.props.placement === 'inline' && (
+          <Text color="error" bold wrap="wrap">
+            {DOCK_HINT}
+          </Text>
+        )}
         {toolbar('')}
         <Text dimColor>
           {picked ? `#${picked.id}: Stop sends Ctrl+C and waits up to 30 s for it to clean up before forcing it. ` : ''}Close pane or Esc leaves runs going.
