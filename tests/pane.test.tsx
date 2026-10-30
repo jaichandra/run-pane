@@ -27,6 +27,7 @@ function engine(
   files: Record<string, string> = { 'package.json': '{"scripts":{"dev":"vite","test":"vitest"}}' },
 ) {
   on('command.register', () => ({ value: { command: 'dev' } }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
   on('tool.register', () => ({ value: { tool: 'mcp__run-pane__run_output' } }))
   on('ui.open', (_, e) => {
     process.opened?.push(e.id)
@@ -73,14 +74,26 @@ test('/dev starts a command and the pane lists it with its output and a Stop', a
   await ui.unmount()
 })
 
+test('a prompt starting with > runs the command and never reaches the model', async ($, on) => {
+  const process = { calls: [] as string[][], lines: ['ready on :3000\n'] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+
+  const sent = await $.prompt.submit({ text: '> npm run dev', origin: { kind: 'composer' }, wait: false })
+  expect(sent.drop).toContain('Started #1: npm run dev')
+
+  const plain = await $.prompt.submit({ text: 'explain >> in bash', origin: { kind: 'composer' }, wait: false })
+  expect(plain.drop).toBeUndefined()
+})
+
 test('the status line keeps /shell while a command runs', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready\n'] }
   engine(on, process)
   status.length = 0
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await $.command.run(typed('dev', 'npm run dev'))
-  expect(status.at(-1)).toBe('\u25b6 1 running \u00b7 /dev \u00b7 /shell')
-  expect(status[0]).toBe('\u25b6 /dev \u00b7 /shell')
+  expect(status.at(-1)).toBe('\u25b6 1 running \u00b7 /dev \u00b7 > \u00b7 /shell')
+  expect(status[0]).toBe('\u25b6 /dev \u00b7 > \u00b7 /shell')
 })
 
 test('the buttons are on top and again below the output', async ($, on) => {
