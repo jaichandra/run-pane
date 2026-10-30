@@ -79,10 +79,13 @@ test('a > prompt starts a command and the pane lists it with its output and a St
 test('a prompt starting with > runs the command and never reaches the model', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready on :3000\n'] }
   engine(on, process)
+  const filled: string[] = []
+  on('prompt.fill', (_, e) => { filled.push(e.text); return { isFilled: true } })
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
   const sent = await $.prompt.submit({ text: '> npm run dev', origin: { kind: 'composer' }, wait: false })
   expect(sent.drop).toContain('Started #1: npm run dev')
+  expect(filled).toEqual([''])
 
   const plain = await $.prompt.submit({ text: 'explain >> in bash', origin: { kind: 'composer' }, wait: false })
   expect(plain.drop).toBeUndefined()
