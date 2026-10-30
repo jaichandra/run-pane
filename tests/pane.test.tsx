@@ -125,7 +125,7 @@ test('the status line keeps /shell while a command runs', async ($, on) => {
   expect(status[0]).toBe('\u25b6 /rp \u00b7 /shell')
 })
 
-test('the buttons are on top and again below the output', async ($, on) => {
+test('the buttons are one row below the output', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
@@ -134,10 +134,10 @@ test('the buttons are on top and again below the output', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ key: 'stop:1' })).toBeDefined()
   const keys = (await ui.findAll({ type: 'Button' })).map(button => button.key)
-  for (const key of ['stop:1', 'clear:1', 'top', 'end', 'shell', 'close']) {
-    expect(keys, key).toContain(key)
-    expect(keys, `${key}-b`).toContain(key === 'stop:1' || key === 'clear:1' ? `${key}-b` : `${key}-b`)
+  for (const key of ['stop:1', 'clear:1', 'end', 'shell', 'close']) {
+    expect(keys.filter(one => one === key), key).toHaveLength(1)
   }
+  expect(keys).not.toContain('top')
   // Ctrl+C is part of Stop, not a button of its own.
   expect(keys.some(key => key?.startsWith('int:'))).toBe(false)
   await ui.unmount()
@@ -193,7 +193,6 @@ test('the pane closes from /rp close and from its Close button, and the runs go 
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ key: 'close' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Esc leaves runs going/ })).toBeDefined()
   expect(await ui.find({ key: 'shell' })).toBeDefined()
   await ui.press({ key: 'close' })
   await ui.unmount()

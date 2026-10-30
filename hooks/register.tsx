@@ -551,15 +551,15 @@ export const register: Register = on => {
     }
 
     // The pane scrolls as a whole (wheel, or the keys while it has the focus), so the output is
-    // drawn in full and everything above it scrolls away with the top of it. The buttons are
-    // drawn above the output and below it, so they are in reach at either end.
+    // drawn in full and everything above it scrolls away with the top of it. The buttons are one
+    // row at the very end, so they stay in view while the pane follows the output.
     const output = picked?.log.tail(MAX_LINES) ?? []
 
-    const toolbar = (at: string): JSX.Element => (
+    const toolbar = (): JSX.Element => (
       <Box flexWrap="wrap" columnGap={1}>
         {picked?.status === 'running' && (
           <Button
-            key={`${picked.isStopping ? 'force' : 'stop'}:${picked.id}${at}`}
+            key={`${picked.isStopping ? 'force' : 'stop'}:${picked.id}`}
             label={picked.isStopping ? 'Force kill' : 'Stop (Ctrl+C)'}
             onPress={() => {
               if (picked.isStopping) picked.isForced = true
@@ -569,7 +569,7 @@ export const register: Register = on => {
         )}
         {picked && picked.status !== 'running' && (
           <Button
-            key={`restart:${picked.id}${at}`}
+            key={`restart:${picked.id}`}
             label="Restart"
             onPress={() => {
               runs.splice(runs.indexOf(picked), 1)
@@ -579,7 +579,7 @@ export const register: Register = on => {
         )}
         {picked && (
           <Button
-            key={`clear:${picked.id}${at}`}
+            key={`clear:${picked.id}`}
             label="Clear"
             onPress={() => {
               picked.log.clear()
@@ -589,7 +589,7 @@ export const register: Register = on => {
         )}
         {picked && picked.status !== 'running' && (
           <Button
-            key={`remove:${picked.id}${at}`}
+            key={`remove:${picked.id}`}
             label="Remove"
             onPress={() => {
               runs.splice(runs.indexOf(picked), 1)
@@ -598,10 +598,9 @@ export const register: Register = on => {
             }}
           />
         )}
-        <Button key={`top${at}`} label="Top" onPress={() => void $.ui.scroll({ in: PANE, to: 'start' })} />
-        <Button key={`end${at}`} label="End" onPress={() => void $.ui.scroll({ in: PANE, to: 'end' })} />
-        <Button key={`shell${at}`} label="Shell" onPress={() => void openShell($).then(text => $.ui.toast(text))} />
-        <Button key={`close${at}`} label="Close pane" onPress={() => void $.ui.close({ id: PANE })} />
+        <Button key={`end`} label="End" onPress={() => void $.ui.scroll({ in: PANE, to: 'end' })} />
+        <Button key={`shell`} label="Shell" onPress={() => void openShell($).then(text => $.ui.toast(text))} />
+        <Button key={`close`} label="Close pane" onPress={() => void $.ui.close({ id: PANE })} />
       </Box>
     )
 
@@ -615,10 +614,6 @@ export const register: Register = on => {
             {DOCK_HINT}
           </Text>
         )}
-        {toolbar('')}
-        <Text dimColor>
-          {picked ? `#${picked.id}: Stop sends Ctrl+C and waits up to 30 s for it to clean up before forcing it. ` : ''}Close pane or Esc leaves runs going.
-        </Text>
         {Input ? (
           <Input
             key="cmd"
@@ -677,7 +672,7 @@ export const register: Register = on => {
             {picked.log.size === 0 && <Text dimColor>No output yet.</Text>}
           </Box>
         )}
-        {toolbar('-b')}
+        {toolbar()}
       </Box>
     )
   })
