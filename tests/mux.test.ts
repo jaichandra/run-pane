@@ -93,4 +93,10 @@ test('a shell is idle when it leads its terminal: herdr by its process info, tmu
   expect(tmux.isIdle(' 4113606 4113606\n')).toBe(true)
   expect(tmux.isIdle(' 4113606 4113674\n')).toBe(false)
   expect(tmux.isIdle('')).toBe(false)
+  // What its background jobs are children of.
+  expect(herdr.shellPid(info(41))).toBe(41)
+  expect(herdr.shellPid('{}')).toBeUndefined()
+  expect(herdr.shellPid('not json')).toBeUndefined()
+  expect(tmux.shellPid(' 4113606 4113674\n')).toBe(4113606)
+  expect(tmux.shellPid('')).toBeUndefined()
 })

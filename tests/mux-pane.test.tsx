@@ -27,6 +27,10 @@ type Machine = {
   gone?: Set<string>
   /** Panes with a command of the person's running in them. */
   busy?: Set<string>
+  /** Panes whose shell has a background job (`cmd &`): nothing in front of the prompt, but not free. */
+  jobs?: Set<string>
+  /** Whether pgrep is missing, so the jobs cannot be told. */
+  isPgrepMissing?: boolean
   /** Whether splitting fails. */
   isSplitBroken?: boolean
   settings?: string
@@ -81,8 +85,15 @@ function engine(on: On, machine: Machine): void {
       if (machine.gone?.has(pane)) return done('', 1, "can't find pane")
       const line = typed.get(pane)
       const isBusy = line === undefined ? machine.busy?.has(pane) === true : machine.screen?.(line, reads.get(pane) ?? 0, interrupted.has(pane))?.isBusy === true
-      const group = isBusy ? 99 : 41
-      return done(bin === 'herdr' ? JSON.stringify({ result: { process_info: { foreground_process_group_id: group, shell_pid: 41 } } }) : ` 41 ${group}\n`)
+      // Each pane's shell has a pid of its own, which `pgrep -P` below turns back into the pane.
+      const shell = 100 + Number(/(\d+)$/.exec(pane)?.[1])
+      const group = isBusy ? 99 : shell
+      return done(bin === 'herdr' ? JSON.stringify({ result: { process_info: { foreground_process_group_id: group, shell_pid: shell } } }) : ` ${shell} ${group}\n`)
+    }
+    if (bin === 'pgrep') {
+      if (machine.isPgrepMissing) throw new Error('spawn pgrep ENOENT')
+      const pane = [...(machine.jobs ?? [])].find(one => 100 + Number(/(\d+)$/.exec(one)?.[1]) === Number(rest[1]))
+      return pane ? done('4242\n') : done('', 1)
     }
     if (bin === 'herdr' || bin === 'tmux') {
       const isHerdr = bin === 'herdr'
@@ -422,4 +433,54 @@ test('a /clear keeps the panes, and a pane already closed is not closed twice', 
   expect(closedBefore).toBe(1)
   expect(machine.calls.filter(argv => argv[1] === 'kill-pane')).toHaveLength(1)
   await ui.unmount()
+})
+
+test('a pane whose shell has a background job is not used again: it prints there, so the run gets a pane of its own', async ($, on) => {
+  const machine = machineOf({ env: HERDR, screen: finishing() })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.find({ key: 'restart:1' })
+  await ui.unmount()
+
+  // The person started `while true; do ./script.sh; sleep 1; done &` there: the prompt is back, the loop is not over.
+  machine.jobs = new Set(['w1:p1'])
+  await gt($, 'echo second')
+  const splits = machine.calls.filter(argv => argv[2] === 'split')
+  expect(splits).toHaveLength(2)
+  expect(splits[1]).toEqual(['herdr', 'pane', 'split', 'w1:p1', '--direction', 'down', '--cwd', '/w/sample-app', '--no-focus'])
+  expect(machine.calls.filter(argv => argv[2] === 'run').map(argv => argv[3])).toEqual(['w1:p1', 'w1:p2'])
+})
+
+test('the same in tmux, and a finished background job frees the pane again', async ($, on) => {
+  const machine = machineOf({ env: TMUX, screen: finishing(), jobs: new Set(['%1']) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'make a')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.find({ key: 'restart:1' })
+  await ui.unmount()
+  await gt($, 'make b')
+  expect(machine.calls.filter(argv => argv[1] === 'split-window')).toHaveLength(2)
+
+  machine.jobs = new Set()
+  const again = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await again.find({ key: 'restart:2' })
+  await again.unmount()
+  await gt($, 'make c')
+  expect(machine.calls.filter(argv => argv[1] === 'split-window')).toHaveLength(2)
+  expect(machine.calls).toContainEqual(['tmux', 'send-keys', '-t', '%2', '-l', '--', 'make c'])
+})
+
+test('where pgrep cannot run the jobs are not assumed, and the pane is used again', async ($, on) => {
+  const machine = machineOf({ env: HERDR, screen: finishing(), isPgrepMissing: true })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.find({ key: 'restart:1' })
+  await ui.unmount()
+  await gt($, 'npm run lint')
+  expect(machine.calls.filter(argv => argv[2] === 'split')).toHaveLength(1)
 })

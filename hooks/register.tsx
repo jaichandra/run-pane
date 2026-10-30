@@ -235,10 +235,23 @@ async function paneText($: EngineInterface, mux: Mux, pane: string): Promise<str
   return shown?.exitCode === 0 ? shown.stdout : ''
 }
 
-// Whether the pane's shell is at its prompt, with nothing running in it.
-async function isIdle($: EngineInterface, mux: Mux, pane: string): Promise<boolean> {
+// Whether the pane's shell is at its prompt, with nothing running in front of it; and its pid, for what
+// runs behind it.
+async function paneState($: EngineInterface, mux: Mux, pane: string): Promise<{ isIdle: boolean; shell?: number }> {
   const asked = await $.process.run(driver(mux).idle(pane), { timeoutMs: MUX_MS }).catch(() => undefined)
-  return asked?.exitCode === 0 && driver(mux).isIdle(asked.stdout)
+  if (asked?.exitCode !== 0) return { isIdle: false }
+  const shell = driver(mux).shellPid(asked.stdout)
+  return { isIdle: driver(mux).isIdle(asked.stdout), ...(shell === undefined ? {} : { shell }) }
+}
+
+const isIdle = async ($: EngineInterface, mux: Mux, pane: string): Promise<boolean> => (await paneState($, mux, pane)).isIdle
+
+// Whether the shell has processes of its own: `cmd &`, a `while ...; done &` loop. They are not in front of the
+// prompt, but they print into the pane, so it is not free. Where pgrep cannot tell, nothing is assumed.
+async function hasJobs($: EngineInterface, shell: number | undefined): Promise<boolean> {
+  if (shell === undefined) return false
+  const found = await $.process.run(['pgrep', '-P', String(shell)], { timeoutMs: MUX_MS }).catch(() => undefined)
+  return found?.exitCode === 0 && found.stdout.trim() !== ''
 }
 
 // The pane of the last run, when nothing runs in it: none of this mod's runs, and nothing the person
@@ -246,7 +259,8 @@ async function isIdle($: EngineInterface, mux: Mux, pane: string): Promise<boole
 async function idlePane($: EngineInterface, mux: Mux, run: Run): Promise<string | undefined> {
   const id = lastPane?.mux === mux ? lastPane.id : undefined
   if (!id || runs.some(one => one !== run && one.status === 'running' && one.pane === id)) return undefined
-  if (!(await isIdle($, mux, id))) return undefined
+  const state = await paneState($, mux, id)
+  if (!state.isIdle || (await hasJobs($, state.shell))) return undefined
   if (runs.some(one => one !== run && one.status === 'running' && one.pane === id)) return undefined
   run.mux = mux
   run.pane = id

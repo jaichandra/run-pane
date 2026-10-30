@@ -32,8 +32,10 @@ export type MuxDriver = {
   read: (pane: string, lines: number) => string[]
   /** Asks what the pane's shell is doing. */
   idle: (pane: string) => string[]
-  /** Whether what `idle` printed says the shell is at its prompt, with no command running in it. */
+  /** Whether what `idle` printed says the shell is at its prompt, with no command running in front of it. */
   isIdle: (stdout: string) => boolean
+  /** The pid of the pane's shell, from what `idle` printed: what its background jobs are children of. */
+  shellPid: (stdout: string) => number | undefined
   /** Ctrl+C. */
   interrupt: (pane: string) => string[]
   close: (pane: string) => string[]
@@ -64,6 +66,14 @@ const herdr: MuxDriver = {
       return false
     }
   },
+  shellPid: stdout => {
+    try {
+      const pid = (JSON.parse(stdout) as { result?: { process_info?: { shell_pid?: unknown } } }).result?.process_info?.shell_pid
+      return typeof pid === 'number' && pid > 1 ? pid : undefined
+    } catch {
+      return undefined
+    }
+  },
   interrupt: pane => ['herdr', 'pane', 'send-keys', pane, 'C-c'],
   close: pane => ['herdr', 'pane', 'close', pane],
 }
@@ -86,6 +96,10 @@ const tmux: MuxDriver = {
   isIdle: stdout => {
     const [pid, group] = stdout.trim().split(/\s+/).map(Number)
     return Number.isInteger(pid) && pid > 0 && pid === group
+  },
+  shellPid: stdout => {
+    const pid = Number(stdout.trim().split(/\s+/)[0])
+    return Number.isInteger(pid) && pid > 1 ? pid : undefined
   },
   interrupt: pane => ['tmux', 'send-keys', '-t', pane, 'C-c'],
   close: pane => ['tmux', 'kill-pane', '-t', pane],
