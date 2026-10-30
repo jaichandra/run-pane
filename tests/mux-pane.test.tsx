@@ -21,6 +21,7 @@ type Machine = {
   calls: string[][]
   spawned: string[][]
   toasts: string[]
+  opened?: string[]
   /** What each pane shows after the command was typed into it, as a function of how many reads it had. */
   screen?: (typed: string, reads: number, isInterrupted: boolean) => string
   /** Panes the multiplexer no longer has. */
@@ -39,7 +40,10 @@ function engine(on: On, machine: Machine): void {
   let panes = 0
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('tool.register', () => ({ value: { tool: 'mcp__run-pane__run_output' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', (_, e) => {
+    machine.opened?.push(e.id)
+    return { value: { isPlaced: true } }
+  })
   on('ui.close', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', (_, e) => {
@@ -121,7 +125,10 @@ test('in herdr /rp splits a pane on the right, types the wrapped command and sta
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
-  expect((await gt($, 'npm test')).text).toContain('Started #1: npm test')
+  // The command is in the herdr pane already: the Run pane stays shut until /rp asks for it.
+  machine.opened = []
+  expect((await gt($, 'npm test')).text).toBe('Started #1 in a herdr pane: npm test. /rp opens the Run pane.')
+  expect(machine.opened).toEqual([])
   expect(machine.spawned).toEqual([])
   expect(machine.calls[0]).toEqual(['herdr', 'pane', 'split', '--current', '--direction', 'right', '--cwd', '/w/sample-app', '--no-focus'])
   expect(machine.calls[1]).toEqual(['herdr', 'pane', 'run', 'w1:p1', typedLine('npm test')])
@@ -237,8 +244,11 @@ test('where no pane can be made the command runs as a process of the mod, as wit
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
+  machine.opened = []
   expect((await gt($, 'npm test')).text).toContain('Started #1: npm test')
   expect(machine.spawned).toHaveLength(1)
+  // Nothing else shows this run, so the Run pane opens.
+  expect(machine.opened).toEqual(['run'])
 })
 
 test('"multiplexer": false in run-pane.json keeps the commands out of the panes', async ($, on) => {
@@ -277,4 +287,12 @@ test('/shell in tmux, and when the split fails it says why in one line', async (
   const said = await $.command.run({ command: 'shell', args: '' })
   expect(machine.calls).toEqual([['tmux', 'split-window', '-h', '-P', '-F', '#{pane_id}', '-c', '/w/sample-app']])
   expect(said.text).toBe('Could not open a pane in tmux: no such session')
+})
+
+test('/rp alone opens the Run pane in a multiplexer too', async ($, on) => {
+  const machine = machineOf({ env: HERDR, opened: [] })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, '')
+  expect(machine.opened).toEqual(['run'])
 })

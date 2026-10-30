@@ -15,7 +15,7 @@
 - **Claude can see the output.** Ask "why did the server crash?" and Claude reads what is on your screen.
 - **One-click suggestions.** The pane offers the scripts it finds in your project (`npm run dev`, `cargo test`, `make build`, ...).
 - **A shell on demand.** `/shell` opens a shell in the session's folder: a pane beside Claude Code in herdr or tmux, a terminal window on macOS.
-- **Runs in your multiplexer.** Started inside [herdr](https://herdr.dev) or tmux, `/rp` runs each command in a pane of its own beside Claude Code, where you can click in and type to it, and the Run pane still lists it and shows its output.
+- **Runs in your multiplexer.** Started inside [herdr](https://herdr.dev) or tmux, `/rp` runs each command in a pane of its own beside Claude Code, where you can click in and type to it.
 
 ## Quick start
 
@@ -89,7 +89,7 @@ The list holds 12 runs at most; the oldest finished ones drop off first. Runs st
 
 When Claude Code runs inside [herdr](https://herdr.dev) (`HERDR_ENV=1`) or tmux (`$TMUX`), the plugin notices and uses it, with no setting. herdr is checked first.
 
-- `/rp <command>` splits a pane (the first on the right of Claude Code, the next ones below it), types the command into it and follows what the pane shows. Your focus stays where it was. The pane is a real terminal: click into it to answer a prompt or use an editor. The Run pane lists the run, shows its output and exit code, and `run_output` returns it to Claude as before.
+- `/rp <command>` splits a pane (the first on the right of Claude Code, the next ones below it), types the command into it and follows what the pane shows. Your focus stays where it was. The pane is a real terminal: click into it to answer a prompt or use an editor. `/rp <command>` leaves the Run pane shut, since the command is already in front of you; `/rp` alone opens it, listing the runs with their output and exit codes, and `run_output` returns them to Claude as before.
 - Stop types Ctrl+C into the pane; if the command ignores it for 30 s, or Force kill is pressed, the pane is closed. Remove and Restart close a finished run's pane. A finished run's pane stays open until then, so you can read it. Closing a pane yourself ends its run as stopped.
 - The command is typed as one `sh -c '...'` line with everything single-quoted, so it runs the same whichever shell the pane has (bash, zsh, fish), and what it reports at the end is how the Run pane knows its exit code. That line shows at the top of the pane.
 - If a pane cannot be made, the command runs as before, as a process of the plugin, so `/rp` never stops working because of the multiplexer.

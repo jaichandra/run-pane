@@ -383,13 +383,16 @@ async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean
     await $.ui.close({ id: PANE })
     return 'Run pane closed. Commands keep running; /rp shows them again.'
   }
+  // In a multiplexer pane the command is in front of the person already: the Run pane stays shut, and
+  // /rp alone opens it. If no pane could be made the run is a process of this mod, and the pane shows it.
+  const run = cmd === '' ? undefined : await start($, cmd)
+  if (run?.mux) return `Started #${run.id} in a ${run.mux} pane: ${cmd}. /rp opens the Run pane.`
   const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true, columns: DOCK_COLUMNS })
   showStatus($)
   // Docked beside the transcript only in the fullscreen layout; otherwise it sits above the prompt.
   const hint = placed.isPlaced && !isFullscreen ? ` ${DOCK_HINT}` : ''
   if (cmd === '') return placed.isPlaced ? `Run pane opened.${hint}` : 'The Run pane needs a wider terminal (about 110 columns) or the flicker-free display mode (CLAUDE_CODE_NO_FLICKER=1 claude).'
-  const run = await start($, cmd)
-  return `Started #${run.id}: ${cmd}${placed.isPlaced ? hint : ' (the Run pane needs a wider terminal to show it)'}`
+  return `Started #${run?.id}: ${cmd}${placed.isPlaced ? hint : ' (the Run pane needs a wider terminal to show it)'}`
 }
 
 const open = (id: number): Run | undefined => runs.find(run => run.id === id)
