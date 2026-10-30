@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { detectMux, driver, readPane, shQuote, typedLine } from '../hooks/mux'
+import { detectMux, driver, echoes, readPane } from '../hooks/mux'
 
 test('herdr is told by HERDR_ENV=1 with a pane, tmux by TMUX with a pane, and herdr wins inside tmux', () => {
   expect(detectMux({ herdrEnv: '1', herdrPane: 'w4:p1' })).toBe('herdr')
@@ -10,18 +10,6 @@ test('herdr is told by HERDR_ENV=1 with a pane, tmux by TMUX with a pane, and he
   expect(detectMux({ herdrEnv: '0', herdrPane: 'w4:p1' })).toBeUndefined()
   expect(detectMux({ herdrEnv: '1' })).toBeUndefined()
   expect(detectMux({ tmux: '/tmp/t,1,0' })).toBeUndefined()
-})
-
-test('a shell word is single-quoted and a quote in it is closed, escaped and reopened', () => {
-  expect(shQuote('npm run dev')).toBe("'npm run dev'")
-  expect(shQuote("echo it's $(rm -rf ~) `x` \"y\"")).toBe(`'echo it'\\''s $(rm -rf ~) \`x\` "y"'`)
-  expect(shQuote('')).toBe("''")
-})
-
-test('the typed line is the script and the command, one single-quoted word each, on one line', () => {
-  expect(typedLine('/p/hooks/rp-run.sh', "make 'all'")).toBe(`sh '/p/hooks/rp-run.sh' 'make '\\''all'\\'''`)
-  expect(typedLine('/my dir/rp-run.sh', 'ls')).toBe("sh '/my dir/rp-run.sh' 'ls'")
-  expect(typedLine('/p/rp-run.sh', 'a\nb')).toContain('a\nb')
 })
 
 test('herdr: split, type, read, interrupt and close are argument vectors', () => {
@@ -60,25 +48,33 @@ test('tmux: split keeps the focus unless asked, and a typed line cannot be read 
   expect(d.close('%4')).toEqual(['tmux', 'kill-pane', '-t', '%4'])
 })
 
-const DASH = '\u2500\u2500'
-
-test('a pane read is the command output: no command line above it, no footer and no prompt below it, and the exit code', () => {
-  const shown = `$ echo hi\nhi\n\n${DASH} exit 3\n$ \n\n\n`
-  expect(readPane(shown, 'echo hi')).toEqual({ text: 'hi', code: 3 })
+test('the command is the line typed at a prompt, and a command typed again is one echo more', () => {
+  const shown = 'me@h:~$ echo hi\nhi\nme@h:~$ '
+  expect(echoes(shown, 'echo hi')).toBe(1)
+  expect(echoes(`${shown}echo hi\nhi\nme@h:~$ `, 'echo hi')).toBe(2)
+  expect(echoes(`${shown}echo hi\nhi\nme@h:~$ echo hi\nhi\n$ `, 'echo hi')).toBe(3)
+  expect(echoes('', 'echo hi')).toBe(0)
+  // Output that ends in the same letters as the command is not the command.
+  expect(echoes('me@h:~$ ls\ntools\nlib\nme@h:~$ ', 'ls')).toBe(1)
+  expect(echoes('me@h:~$ ls  \n', ' ls ')).toBe(1)
 })
 
-test('while the command runs there is no code, and the empty lines a tmux capture pads with are dropped', () => {
-  expect(readPane('$ npm run dev\nready on :3000\n\n\n\n', 'npm run dev')).toEqual({ text: 'ready on :3000' })
-  expect(readPane('', 'x')).toEqual({ text: '' })
+test('a pane read is what follows the last typed command; once over, without the prompt after it', () => {
+  const shown = 'me@h:~$ echo old\nold\nme@h:~$ echo hi\nhi\nthere\nme@h:~$ '
+  expect(readPane(shown, 'echo hi', true)).toBe('hi\nthere')
+  // Still running: the last line is output, not a prompt.
+  expect(readPane('me@h:~$ npm run dev\nready on :3000\nwatching\n', 'npm run dev', false)).toBe('ready on :3000\nwatching')
 })
 
-test('output that ends without a newline keeps its last line, and colours are not part of the footer', () => {
-  expect(readPane(`$ printf x\nx\n\u001b[2m${DASH} exit 0\u001b[0m\n$ `, 'printf x')).toEqual({ text: 'x', code: 0 })
+test('a command with no output reads as nothing, and what is not there yet reads as nothing', () => {
+  expect(readPane('me@h:~$ true\nme@h:~$ ', 'true', true)).toBe('')
+  expect(readPane('', 'true', false)).toBe('')
+  // The command was typed and is running with nothing printed.
+  expect(readPane('me@h:~$ sleep 5\n', 'sleep 5', false)).toBe('')
 })
 
-test('the command line is dropped only where it is the first line, and a footer-like word inside a line is not the end', () => {
-  expect(readPane('$ echo $ echo\nthe $ echo word\n', 'echo')).toEqual({ text: '$ echo $ echo\nthe $ echo word' })
-  expect(readPane(`$ echo x\nsee ${DASH} exit 4 here\n`, 'echo x')).toEqual({ text: `see ${DASH} exit 4 here` })
+test('colours are not part of the text, and the empty lines a tmux capture pads with are dropped', () => {
+  expect(readPane('$ ls\n\u001b[34mdir\u001b[0m\n$ \n\n\n\n', 'ls', true)).toBe('dir')
 })
 
 test('a shell is idle when it leads its terminal: herdr by its process info, tmux by ps', () => {

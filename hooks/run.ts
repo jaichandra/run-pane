@@ -116,17 +116,20 @@ export function descendants(ps: string, root: number): number[] {
   return found
 }
 
-export type RunStatus = 'running' | 'exited' | 'stopped' | 'failed'
+// `done`: ended with no exit code to tell (a command typed into a multiplexer pane's own shell).
+export type RunStatus = 'running' | 'exited' | 'done' | 'stopped' | 'failed'
 
 export function statusMark(status: RunStatus, code: number | null): string {
   if (status === 'running') return '●'
   if (status === 'stopped') return '■'
+  if (status === 'done') return '○'
   return status === 'exited' && code === 0 ? '✓' : '✗'
 }
 
 export function statusWords(status: RunStatus, code: number | null): string {
   if (status === 'running') return 'running'
   if (status === 'stopped') return 'stopped'
+  if (status === 'done') return 'done'
   if (status === 'failed') return 'could not start'
   return code === null ? 'killed' : `exit ${code}`
 }

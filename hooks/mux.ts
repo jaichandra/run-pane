@@ -1,6 +1,6 @@
 // The multiplexer side of /rp and /shell with no engine in it: which multiplexer the session runs
-// in, the commands that split a pane, type into it, read it back and close it, and how a command
-// typed into a pane reports that it ended.
+// in, the commands that split a pane, type into it, read it back and close it, and how what a pane
+// shows is told from the command that was typed into it.
 
 export type Mux = 'herdr' | 'tmux'
 
@@ -26,7 +26,7 @@ export type MuxDriver = {
   split: (options: SplitOptions) => string[]
   /** The new pane's id, from what `split` printed. */
   paneId: (stdout: string) => string | undefined
-  /** Types a line into a pane and presses Enter: one command each. */
+  /** Types a line into a pane and presses Enter: one command each. The line is one command, as typed at a prompt. */
   type: (pane: string, line: string) => string[][]
   /** The pane's last `lines` lines, joined where the terminal wrapped them. */
   read: (pane: string, lines: number) => string[]
@@ -93,35 +93,31 @@ const tmux: MuxDriver = {
 
 export const driver = (mux: Mux): MuxDriver => (mux === 'herdr' ? herdr : tmux)
 
-/** One shell word for any text, in the shells people use (bash, zsh, fish, sh): inside single quotes
- * nothing is special, and a single quote itself is closed, escaped and reopened. */
-export const shQuote = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`
-
-/** What to type into a pane to run `cmd`: the script that clears the pane, shows the command, runs it and
- * reports how it ended (hooks/rp-run.sh). Both words are single-quoted, so the pane's own shell never reads
- * the command, whichever shell it is. */
-export const typedLine = (script: string, cmd: string): string => `sh ${shQuote(script)} ${shQuote(cmd)}`
-
-export type PaneRead = { text: string; code?: number }
-
-// The line the script ends with: dim, two box-drawing dashes and the exit code.
-const FOOTER = /^\u2500\u2500 exit (\d+)\s*$/
 const SGR = /\u001b\[[0-9;]*m/g
 
-/** What a pane showed, as the command's output: the command's own line at the top (the Run pane lists the
- * command already) and the footer at the end, with the exit code when the footer is there, are not part of
- * it; nor is anything after the footer (the next prompt). */
-export function readPane(shown: string, cmd: string): PaneRead {
-  let out = shown.replace(/\r/g, '').replace(SGR, '').split('\n')
-  let code: number | undefined
-  for (let at = out.length - 1; at >= 0 && code === undefined; at--) {
-    const found = FOOTER.exec(out[at] as string)
-    if (found) {
-      code = Number(found[1])
-      out = out.slice(0, at)
-    }
-  }
-  if (out[0] === `$ ${cmd}`) out = out.slice(1)
+const screenLines = (shown: string): string[] => shown.replace(/\r/g, '').replace(SGR, '').split('\n')
+
+// A line ends with the command typed at a prompt: after a space (or alone), so output that merely ends in the
+// same letters (`ls` in `tools`) is not taken for it.
+const isEcho = (line: string, cmd: string): boolean => {
+  const text = line.trimEnd()
+  const typed = cmd.trim()
+  return text === typed || text.endsWith(` ${typed}`) || text.endsWith(`\t${typed}`)
+}
+
+/** How many lines of the pane show `cmd` typed at a prompt. A command typed again has one more than before. */
+export const echoes = (shown: string, cmd: string): number => screenLines(shown).filter(line => isEcho(line, cmd)).length
+
+/** What a pane showed, as the command's output: what follows the last line that has the command typed at a
+ * prompt, and, once the command is over, without the prompt that follows it. */
+export function readPane(shown: string, cmd: string, isOver: boolean): string {
+  const lines = screenLines(shown)
+  let typed = -1
+  for (let at = lines.length - 1; at >= 0 && typed < 0; at--) if (isEcho(lines[at] as string, cmd)) typed = at
+  const out = lines.slice(typed + 1)
   while (out.length > 0 && out[out.length - 1] === '') out.pop()
-  return { text: out.join('\n'), ...(code === undefined ? {} : { code }) }
+  // The shell's prompt is the last line once it is back; a command over leaves no other line after its output.
+  if (isOver && typed >= 0) out.pop()
+  while (out.length > 0 && out[out.length - 1] === '') out.pop()
+  return out.join('\n')
 }

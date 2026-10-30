@@ -15,7 +15,7 @@ import {
   WRAPPER,
 } from './run'
 import type { PartKind, RunStatus } from './run'
-import { detectMux, driver, readPane, typedLine } from './mux'
+import { detectMux, driver, echoes, readPane } from './mux'
 import type { Mux } from './mux'
 import { hasControls, ITERM_PATH, NOT_MACOS, oneLine, osascriptArgv } from './shell'
 import type { TerminalApp } from './shell'
@@ -191,7 +191,7 @@ async function stop($: EngineInterface, run: Run): Promise<void> {
 
 function finish($: EngineInterface, run: Run, status: RunStatus, code: number | null): void {
   if (run.status !== 'running') return
-  run.status = run.isStopping && status === 'exited' ? 'stopped' : status
+  run.status = run.isStopping && (status === 'exited' || status === 'done') ? 'stopped' : status
   run.code = code
   run.release = undefined
   showStatus($)
@@ -226,13 +226,24 @@ function dismiss($: EngineInterface, run: Run): void {
   if (run.mux && pane && !runs.some(one => one.pane === pane)) void closePane($, run.mux, pane)
 }
 
+// What a pane shows now; nothing when it cannot be read.
+async function paneText($: EngineInterface, mux: Mux, pane: string): Promise<string> {
+  const shown = await $.process.run(driver(mux).read(pane, MAX_LINES), { timeoutMs: MUX_MS }).catch(() => undefined)
+  return shown?.exitCode === 0 ? shown.stdout : ''
+}
+
+// Whether the pane's shell is at its prompt, with nothing running in it.
+async function isIdle($: EngineInterface, mux: Mux, pane: string): Promise<boolean> {
+  const asked = await $.process.run(driver(mux).idle(pane), { timeoutMs: MUX_MS }).catch(() => undefined)
+  return asked?.exitCode === 0 && driver(mux).isIdle(asked.stdout)
+}
+
 // The pane of the last run, when nothing runs in it: none of this mod's runs, and nothing the person
 // started there, so its shell is at the prompt. Claimed for `run` at once, before anything else can type there.
 async function idlePane($: EngineInterface, mux: Mux, run: Run): Promise<string | undefined> {
   const id = lastPane?.mux === mux ? lastPane.id : undefined
   if (!id || runs.some(one => one !== run && one.status === 'running' && one.pane === id)) return undefined
-  const asked = await $.process.run(driver(mux).idle(id), { timeoutMs: MUX_MS }).catch(() => undefined)
-  if (!asked || asked.exitCode !== 0 || !driver(mux).isIdle(asked.stdout)) return undefined
+  if (!(await isIdle($, mux, id))) return undefined
   if (runs.some(one => one !== run && one.status === 'running' && one.pane === id)) return undefined
   run.mux = mux
   run.pane = id
@@ -258,11 +269,14 @@ async function splitPane($: EngineInterface, mux: Mux, cwd: string): Promise<str
 async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Promise<'stop'>): Promise<boolean> {
   const d = driver(mux)
   let pane: string | undefined
+  let before = 0
   try {
     // A pane with nothing running in it is used again; only a busy one (or none) is a reason for a new one.
     pane = (await idlePane($, mux, run)) ?? (await splitPane($, mux, run.cwd))
     if (!pane) return false
-    for (const argv of d.type(pane, typedLine(`${$.plugin.root}/hooks/rp-run.sh`, run.cmd))) {
+    // What the pane showed before: the command typed again must show up as one more line than this.
+    before = echoes(await paneText($, mux, pane), run.cmd)
+    for (const argv of d.type(pane, run.cmd)) {
       const typed = await $.process.run(argv, { timeoutMs: MUX_MS })
       if (typed.exitCode !== 0) throw new Error(oneLine(typed.stderr || typed.stdout))
     }
@@ -296,15 +310,20 @@ async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Prom
         return
       }
       misses = 0
-      const { text, code } = readPane(shown.stdout, run.cmd)
+      // The command is over when it has been typed (it shows once more than it did) and the shell is at
+      // its prompt again; the shell's own exit code is not something a pane tells.
+      const isTyped = echoes(shown.stdout, run.cmd) > before
+      const isOver = isTyped && (await isIdle($, mux, id))
+      // Once over, the prompt that follows the output has been drawn: read again, so it is not output.
+      const text = isOver ? readPane((await paneText($, mux, id)) || shown.stdout, run.cmd, true) : isTyped ? readPane(shown.stdout, run.cmd, false) : ''
       if (text !== last) {
         last = text
         run.log.clear()
         run.log.push(text)
         redraw($)
       }
-      if (code !== undefined) {
-        finish($, run, 'exited', code)
+      if (isOver) {
+        finish($, run, 'done', null)
         return
       }
     }
@@ -326,7 +345,8 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
     run.release = () => resolve('stop')
   })
   const mux = await findMux($)
-  if (mux && (await startInPane($, run, mux, stopped))) return run
+  // One line, as typed at a prompt: a command of several lines would be run line by line.
+  if (mux && !cmd.includes('\n') && (await startInPane($, run, mux, stopped))) return run
   void (async () => {
     const stream = $.process.spawn({ argv: ['sh', '-c', WRAPPER, 'sh', cmd], cwd: run.cwd })
     const it = stream[Symbol.asyncIterator]()

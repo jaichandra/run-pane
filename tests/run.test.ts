@@ -90,6 +90,9 @@ test('a run is marked and described by how it ended', async () => {
   expect(statusWords('exited', 2)).toBe('exit 2')
   expect(statusWords('exited', null)).toBe('killed')
   expect(statusWords('stopped', null)).toBe('stopped')
+  // Over, with no exit code to tell: what a command typed into a multiplexer pane's own shell leaves.
+  expect(statusMark('done', null)).toBe('○')
+  expect(statusWords('done', null)).toBe('done')
   expect(statusWords('failed', null)).toBe('could not start')
 })
 
