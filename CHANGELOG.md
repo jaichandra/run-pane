@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- What a `> <command>` did is shown as a toast instead of a "Prompt dropped by a hook" line in the transcript.
+
 ## 0.1.3
 
 - The prompt box is cleared again just after the engine puts the submitted `> <command>` back, so it is really empty.

@@ -16,11 +16,14 @@ const PANE = {
 } as const
 
 const status: (string | undefined)[] = []
+const toasts: string[] = []
 
 // What the person's `> <command>` prompt does; the answer's `text` is what the pane tells them.
-const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) => ({
-  text: (await $.prompt.submit({ text: `>${args ? ' ' + args : ''}`, origin: { kind: 'composer' }, wait: false })).drop,
-})
+const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) => {
+  toasts.length = 0
+  await $.prompt.submit({ text: `>${args ? ' ' + args : ''}`, origin: { kind: 'composer' }, wait: false })
+  return { text: toasts[0] }
+}
 
 // Stands for the engine beneath the mod: the calls the mod makes are answered here.
 function engine(
@@ -36,6 +39,10 @@ function engine(
     return { value: { isPlaced: true } }
   })
   on('ui.close', () => ({ value: undefined }))
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   on('ui.status', (_, e) => {
     status.push(e.text)
     return { value: undefined }
@@ -83,8 +90,10 @@ test('a prompt starting with > runs the command and never reaches the model', as
   on('prompt.fill', (_, e) => { filled.push(e.text); return { isFilled: true } })
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
+  toasts.length = 0
   const sent = await $.prompt.submit({ text: '> npm run dev', origin: { kind: 'composer' }, wait: false })
-  expect(sent.drop).toContain('Started #1: npm run dev')
+  expect(sent.drop).toBe('')
+  expect(toasts[0]).toContain('Started #1: npm run dev')
   expect(filled).toEqual([''])
 
   const plain = await $.prompt.submit({ text: 'explain >> in bash', origin: { kind: 'composer' }, wait: false })

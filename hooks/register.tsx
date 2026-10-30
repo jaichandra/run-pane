@@ -297,13 +297,14 @@ export const register: Register = on => {
   // Only the person's own typing counts, and a slash command's line is left alone.
   on('prompt.submit', async ($, e, next) => {
     if (e.command || e.isMeta || e.origin.kind !== 'composer' || !e.text.startsWith('>')) return next(e)
-    const drop = await runPrompt($, e.text.slice(1))
+    const said = await runPrompt($, e.text.slice(1))
+    void $.ui.toast(said)
     // A dropped prompt is put back in the box once this hook returns; empty it just after, so the next
     // command can be typed straight away.
     const clear = () => void $.prompt.fill({ text: '' }).catch(() => undefined)
     clear()
     $.clock.after(50, clear)
-    return { drop }
+    return { drop: '' }
   })
 
   // Typing `>` into an empty prompt leaves a space after it, so the command can be typed straight away
