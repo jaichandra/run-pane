@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- `/dev` is removed; use the `>` prompt prefix. Typing `>` into an empty prompt now adds a space after it.
+
 ## 0.1.0
 
 First release as a repository of its own: the mod, taken out of the project it grew in.
