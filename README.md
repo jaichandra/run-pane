@@ -2,6 +2,7 @@
 
 A Run pane for Claude Code. Start a dev server, a test watcher or any other command from a pane beside the chat, watch its output while you keep talking to Claude, stop it cleanly when you are done, and let Claude read what it printed.
 
+- **`>`** at the start of a prompt does the same as `/dev`: `> npm run dev` runs a command, a lone `>` opens the pane, `> close` closes it. The prompt never reaches Claude. (A prompt that starts with `>` for any other reason, such as a quote, is taken as a command too.)
 - **`/dev`** opens the pane. **`/dev <command>`** runs a command in it. **`/dev close`** closes it (runs keep going).
 - **`/shell`** opens a terminal window with a shell in the session's folder (macOS).
 - **`run_output`** is a tool Claude can call to read the latest output of a run, so "why did the server crash?" can be answered from what is on your screen.
