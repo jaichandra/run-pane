@@ -2,7 +2,7 @@
 
 A Run pane for Claude Code. Start a dev server, a test watcher or any other command from a pane beside the chat, watch its output while you keep talking to Claude, stop it cleanly when you are done, and let Claude read what it printed.
 
-- **`>`** at the start of a prompt: `> npm run dev` runs a command, a lone `>` opens the pane, `> close` closes it (runs keep going). Typing `>` into an empty prompt adds a space after it, so you can type the command straight away. The prompt never reaches Claude. (A prompt that starts with `>` for any other reason, such as a quote, is taken as a command too.)
+- **`/rp`**: `/rp npm run dev` runs a command in the pane, a lone `/rp` opens it, `/rp close` closes it (runs keep going). It is a slash command, so it never reaches Claude and the prompt box clears by itself.
 - **`/shell`** opens a terminal window with a shell in the session's folder (macOS).
 - **`run_output`** is a tool Claude can call to read the latest output of a run, so "why did the server crash?" can be answered from what is on your screen.
 
@@ -24,15 +24,15 @@ Answer `y` to add the marketplace, then pick a scope (the user scope is the firs
 
 In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `jaichandra/run-pane`, then Add plugin.
 
-The mod has been used in the terminal (CLI) session, so that is where it is known to work. There the pane docks beside the transcript in the fullscreen layout, or needs a terminal about 110 columns wide; a `>` prompt says so when it cannot place the pane.
+The mod has been used in the terminal (CLI) session, so that is where it is known to work. There the pane docks beside the transcript in the fullscreen layout, or needs a terminal about 110 columns wide; `/rp` says so when it cannot place the pane.
 
-`>` runs commands through `sh`, `ps` and `kill`, so it works on macOS and Linux and not on Windows. `/shell` is macOS only.
+`/rp` runs commands through `sh`, `ps` and `kill`, so it works on macOS and Linux and not on Windows. `/shell` is macOS only.
 
 ## Using it
 
 ### The pane
 
-A `>` prompt opens the pane and gives it the keyboard. From top to bottom it shows:
+`/rp` opens the pane and gives it the keyboard. From top to bottom it shows:
 
 - the folder's name, then a row of buttons (the same row is repeated under the output, so the buttons are in reach at either end);
 - a command field, `$ `: type a command and press Enter;
@@ -78,7 +78,7 @@ The mod needs no configuration. If you bundle it into your own tooling you can d
 ```
 
 - `suggestions`: commands to suggest before the ones found in the folder.
-- `openFor`: words that make the pane open by itself, without taking the keyboard, when the folder's git remote (`origin`) or its path contains one of them (case does not matter; a linked worktree shares its repository's remote, so it counts). Anywhere else the pane waits for a `>` prompt.
+- `openFor`: words that make the pane open by itself, without taking the keyboard, when the folder's git remote (`origin`) or its path contains one of them (case does not matter; a linked worktree shares its repository's remote, so it counts). Anywhere else the pane waits for `/rp`.
 
 Both are optional. A missing or unreadable file means the defaults.
 

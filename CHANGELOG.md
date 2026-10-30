@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- New `/rp` command: `/rp <command>` runs a command in the pane, `/rp` opens it, `/rp close` closes it. It never reaches Claude and leaves nothing in the transcript.
+- The `>` prompt prefix is removed, so a prompt that starts with `>` (a quote, say) is sent to Claude as typed.
+
 ## 0.1.4
 
 - What a `> <command>` did is shown as a toast instead of a "Prompt dropped by a hook" line in the transcript.

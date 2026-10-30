@@ -16,14 +16,11 @@ const PANE = {
 } as const
 
 const status: (string | undefined)[] = []
-const toasts: string[] = []
 
-// What the person's `> <command>` prompt does; the answer's `text` is what the pane tells them.
-const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) => {
-  toasts.length = 0
-  await $.prompt.submit({ text: `>${args ? ' ' + args : ''}`, origin: { kind: 'composer' }, wait: false })
-  return { text: toasts[0] }
-}
+// What the person's `/rp <command>` does; the answer's `text` is what the pane tells them.
+const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) => ({
+  text: (await $.command.run({ command: 'rp', args })).text,
+})
 
 // Stands for the engine beneath the mod: the calls the mod makes are answered here.
 function engine(
@@ -31,7 +28,7 @@ function engine(
   process: { calls: string[][]; lines: string[]; remote?: string; opened?: string[] },
   files: Record<string, string> = { 'package.json': '{"scripts":{"dev":"vite","test":"vitest"}}' },
 ) {
-  on('command.register', () => ({ value: { command: 'dev' } }))
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
   on('tool.register', () => ({ value: { tool: 'mcp__run-pane__run_output' } }))
   on('ui.open', (_, e) => {
@@ -39,10 +36,6 @@ function engine(
     return { value: { isPlaced: true } }
   })
   on('ui.close', () => ({ value: undefined }))
-  on('ui.toast', (_, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
   on('ui.status', (_, e) => {
     status.push(e.text)
     return { value: undefined }
@@ -68,7 +61,7 @@ function engine(
   })
 }
 
-test('a > prompt starts a command and the pane lists it with its output and a Stop', async ($, on) => {
+test('/rp starts a command and the pane lists it with its output and a Stop', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready on :3000\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
@@ -83,21 +76,14 @@ test('a > prompt starts a command and the pane lists it with its output and a St
   await ui.unmount()
 })
 
-test('a prompt starting with > runs the command and never reaches the model', async ($, on) => {
-  const process = { calls: [] as string[][], lines: ['ready on :3000\n'] }
+test('a prompt starting with > is left alone, for the model to read', async ($, on) => {
+  const process = { calls: [] as string[][], lines: [] }
   engine(on, process)
-  const filled: string[] = []
-  on('prompt.fill', (_, e) => { filled.push(e.text); return { isFilled: true } })
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
-  toasts.length = 0
   const sent = await $.prompt.submit({ text: '> npm run dev', origin: { kind: 'composer' }, wait: false })
-  expect(sent.drop).toBe('')
-  expect(toasts[0]).toContain('Started #1: npm run dev')
-  expect(filled).toEqual([''])
-
-  const plain = await $.prompt.submit({ text: 'explain >> in bash', origin: { kind: 'composer' }, wait: false })
-  expect(plain.drop).toBeUndefined()
+  expect(sent.drop).toBeUndefined()
+  expect(process.calls).toEqual([])
 })
 
 test('the status line keeps /shell while a command runs', async ($, on) => {
@@ -106,8 +92,8 @@ test('the status line keeps /shell while a command runs', async ($, on) => {
   status.length = 0
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'npm run dev')
-  expect(status.at(-1)).toBe('\u25b6 1 running \u00b7 > \u00b7 /shell')
-  expect(status[0]).toBe('\u25b6 > \u00b7 /shell')
+  expect(status.at(-1)).toBe('\u25b6 1 running \u00b7 /rp \u00b7 /shell')
+  expect(status[0]).toBe('\u25b6 /rp \u00b7 /shell')
 })
 
 test('the buttons are on top and again below the output', async ($, on) => {
@@ -166,7 +152,7 @@ test('the run_output tool returns the tail of a run for Claude', async ($, on) =
   expect(text).not.toContain('one')
 })
 
-test('the pane closes from > close and from its Close button, and the runs go on', async ($, on) => {
+test('the pane closes from /rp close and from its Close button, and the runs go on', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
@@ -258,19 +244,3 @@ for (const [name, files] of [
     expect(process.calls.filter(argv => argv[0] === 'git')).toEqual([])
   })
 }
-
-test('typing > into an empty prompt leaves a space after it, and only then', async ($, on) => {
-  const process = { calls: [] as string[][], lines: [] }
-  engine(on, process)
-  on('prompt.edit', (_, e) => {
-    const text = e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end)
-    return { text, cursor: e.start + e.inputText.length }
-  })
-  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
-
-  const edit = (text: string, inputText: string) =>
-    $.prompt.edit({ origin: { kind: 'composer' }, text, cursor: text.length, start: text.length, end: text.length, inputText })
-  expect(await edit('', '>')).toMatchObject({ text: '> ', cursor: 2 })
-  expect(await edit('a', '>')).toMatchObject({ text: 'a>' })
-  expect(await edit('', 'x')).toMatchObject({ text: 'x' })
-})

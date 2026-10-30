@@ -95,7 +95,7 @@ function redraw($: EngineInterface): void {
 
 function showStatus($: EngineInterface): void {
   const running = runs.filter(run => run.status === 'running').length
-  $.ui.status(running > 0 ? `▶ ${running} running · > · /shell` : '▶ > · /shell')
+  $.ui.status(running > 0 ? `▶ ${running} running · /rp · /shell` : '▶ /rp · /shell')
 }
 
 // hooks/run-pane.json is optional and meant for whoever bundles the mod: `suggestions` (commands to
@@ -112,7 +112,7 @@ async function settings($: EngineInterface): Promise<Settings> {
 }
 
 // The pane opens by itself, without taking the keyboard, in a folder whose git remote or path
-// names one of the `openFor` words (hooks/run-pane.json); anywhere else it waits for a `>` prompt. A linked
+// names one of the `openFor` words (hooks/run-pane.json); anywhere else it waits for `/rp`. A linked
 // worktree shares its repository's remote, so it counts too.
 async function openIfWanted($: EngineInterface): Promise<void> {
   const { openFor } = await settings($)
@@ -252,12 +252,12 @@ async function openShell($: EngineInterface): Promise<string> {
   }
 }
 
-// What a `>` prompt does: open the pane, and start the command if there is one.
+// What `/rp` does: open the pane, and start the command if there is one.
 async function runPrompt($: EngineInterface, args: string): Promise<string> {
   const cmd = args.trim()
   if (cmd === 'close') {
     await $.ui.close({ id: PANE })
-    return 'Run pane closed. Commands keep running; > shows them again.'
+    return 'Run pane closed. Commands keep running; /rp shows them again.'
   }
   const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true })
   showStatus($)
@@ -271,6 +271,12 @@ const open = (id: number): Run | undefined => runs.find(run => run.id === id)
 export const register: Register = on => {
 
   on('session.start', async ($, e, next) => {
+    await $.command.register({
+      name: 'rp',
+      description: 'Run a command in the Run pane; with none, open the pane (/rp close closes it)',
+      argumentHint: '[command | close]',
+      immediate: true,
+    })
     await $.command.register({
       name: 'shell',
       description: 'Open a terminal window with a shell in this folder (macOS)',
@@ -293,26 +299,8 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // A prompt that starts with `>` runs a command in the pane: `> npm run dev` runs it, a lone `>` opens the pane.
-  // Only the person's own typing counts, and a slash command's line is left alone.
-  on('prompt.submit', async ($, e, next) => {
-    if (e.command || e.isMeta || e.origin.kind !== 'composer' || !e.text.startsWith('>')) return next(e)
-    const said = await runPrompt($, e.text.slice(1))
-    void $.ui.toast(said)
-    // A dropped prompt is put back in the box once this hook returns; empty it just after, so the next
-    // command can be typed straight away.
-    const clear = () => void $.prompt.fill({ text: '' }).catch(() => undefined)
-    clear()
-    $.clock.after(50, clear)
-    return { drop: '' }
-  })
-
-  // Typing `>` into an empty prompt leaves a space after it, so the command can be typed straight away
-  // (as `!` does in Claude Code). Submitting trims it, so `> ` still just opens the pane.
-  on('prompt.edit', (_$, e, next) => {
-    if (e.text === '' && e.inputText === '>') return next({ ...e, inputText: '> ' })
-    return next(e)
-  })
+  // `/rp npm run dev` runs a command in the pane, `/rp` opens it, `/rp close` closes it.
+  on('command.run', { command: 'rp' }, async ($, e) => ({ text: await runPrompt($, e.args) }))
 
   on('command.run', { command: 'shell' }, async $ => ({ text: await openShell($) }))
 
