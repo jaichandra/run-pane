@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Inside herdr or tmux, `/rp` runs each command in the last run's pane when nothing is running in it (shell at its prompt), else in a new pane beside Claude Code (below the last run's after the first); it types the command as one single-quoted `sh -c` line, and follows the pane's output and exit code for the Run pane and `run_output`. Each run ends with a word of its own, so runs in one pane are told apart. Stop types Ctrl+C into the pane and closes it if ignored for 30 s; Remove closes a finished run's pane unless another run is on it. `/rp <command>` leaves the Run pane shut there (`/rp` alone opens it). If no pane can be made, the command runs as a process of the plugin as before. `"multiplexer": false` in `hooks/run-pane.json` turns it off.
+- Inside herdr or tmux, `/rp` runs each command in the last run's pane when nothing is running in it (shell at its prompt), else in a new pane beside Claude Code (below the last run's after the first); it types a short `sh rp-run.sh '<command>'` line whose script clears the pane, shows only the command, runs it and ends with a dim `── exit N` line, and follows the pane's output and exit code for the Run pane and `run_output`. Stop types Ctrl+C into the pane and closes it if ignored for 30 s; Remove closes a finished run's pane unless another run is on it. `/rp <command>` leaves the Run pane shut there (`/rp` alone opens it). If no pane can be made, the command runs as a process of the plugin as before. `"multiplexer": false` in `hooks/run-pane.json` turns it off.
 - `/shell` splits a focused pane in the session's folder in herdr or tmux. Outside them it is unchanged (a Terminal or iTerm window on macOS). The pane's button is now called Shell.
 
 ## 0.2.5

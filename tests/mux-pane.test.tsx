@@ -1,10 +1,13 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { EXIT_MARKER, typedLine } from '../hooks/mux'
+import { typedLine } from '../hooks/mux'
 
-// The word that tells a run's end from another's: the last quoted word of the line typed for it.
-const tokenOf = (line: string): string => /'([a-z0-9]+)'$/.exec(line)?.[1] ?? ''
+// What the script of a pane ends with, and the command in the line typed for it (its last quoted word).
+const DASH = '\u2500\u2500'
+const cmdOf = (line: string): string => (/ '((?:[^']|'\\'')*)'$/.exec(line)?.[1] ?? '').replace(/'\\''/g, "'")
+// The script is the plugin's own, wherever it is installed.
+const scriptOf = (line: string): string => /^sh '([^']*\/hooks\/rp-run\.sh)' /.exec(line)?.[1] ?? ''
 
 // Nothing here starts herdr or tmux: `process.run` is answered by the stub below, which keeps a pane's
 // screen the way the multiplexer would show it, and records what it was asked to run.
@@ -130,7 +133,7 @@ const TMUX = { TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%0' }
 
 // A command that prints a line and exits with a code on its second look.
 const finishing = (code: number) => (typed: string, reads: number) =>
-  reads < 2 ? `$ ${typed}\nbuilding\n` : `$ ${typed}\nbuilding\ndone\n\n${EXIT_MARKER} ${tokenOf(typed)} ${code}\n$ `
+  reads < 2 ? `$ ${cmdOf(typed)}\nbuilding\n` : `$ ${cmdOf(typed)}\nbuilding\ndone\n\n${DASH} exit ${code}\n$ `
 
 test('in herdr /rp splits a pane on the right, types the wrapped command and starts no process of its own', async ($, on) => {
   const machine = machineOf({ env: HERDR, screen: finishing(0) })
@@ -145,7 +148,8 @@ test('in herdr /rp splits a pane on the right, types the wrapped command and sta
   expect(machine.calls[0]).toEqual(['herdr', 'pane', 'split', '--current', '--direction', 'right', '--cwd', '/w/sample-app', '--no-focus'])
   const typed = machine.calls[1] as string[]
   expect(typed.slice(0, 4)).toEqual(['herdr', 'pane', 'run', 'w1:p1'])
-  expect(typed[4]).toBe(typedLine('npm test', tokenOf(typed[4] as string)))
+  expect(scriptOf(typed[4] as string)).not.toBe('')
+  expect(typed[4]).toBe(typedLine(scriptOf(typed[4] as string), 'npm test'))
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /done/ })).toBeDefined()
@@ -162,8 +166,8 @@ test('in tmux the same: a detached split, the line typed literally, then Enter',
 
   expect(machine.calls[0]).toEqual(['tmux', 'split-window', '-d', '-h', '-P', '-F', '#{pane_id}', '-c', '/w/sample-app'])
   const typed = machine.calls[1] as string[]
-  expect(typed.slice(0, 5)).toEqual(['tmux', 'send-keys', '-t', '%1', '-l'])
-  expect(typed[6]).toBe(typedLine('make', tokenOf(typed[6] as string)))
+  expect(typed.slice(0, 6)).toEqual(['tmux', 'send-keys', '-t', '%1', '-l', '--'])
+  expect(typed[6]).toBe(typedLine(scriptOf(typed[6] as string), 'make'))
   expect(machine.calls[2]).toEqual(['tmux', 'send-keys', '-t', '%1', 'Enter'])
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /exit 2/ })).toBeDefined()
@@ -197,7 +201,7 @@ test('when the last run pane was closed, the next run starts a column again', as
 test('Stop types Ctrl+C into the pane and the run reads stopped when the wrapper reports 130', async ($, on) => {
   const machine = machineOf({
     env: HERDR,
-    screen: (typed, _reads, isInterrupted) => (isInterrupted ? `$ ${typed}\nready\n^C\n\n${EXIT_MARKER} ${tokenOf(typed)} 130\n$ ` : `$ ${typed}\nready\n`),
+    screen: (typed, _reads, isInterrupted) => (isInterrupted ? `$ ${cmdOf(typed)}\nready\n^C\n\n${DASH} exit 130\n$ ` : `$ ${cmdOf(typed)}\nready\n`),
   })
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
@@ -213,7 +217,7 @@ test('Stop types Ctrl+C into the pane and the run reads stopped when the wrapper
 })
 
 test('a run that ignores Ctrl+C has its pane closed', async ($, on) => {
-  const machine = machineOf({ env: HERDR, screen: typed => `$ ${typed}\nstuck\n` })
+  const machine = machineOf({ env: HERDR, screen: typed => `$ ${cmdOf(typed)}\nstuck\n` })
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'stuck')
@@ -227,7 +231,7 @@ test('a run that ignores Ctrl+C has its pane closed', async ($, on) => {
 })
 
 test('a pane the person closes ends the run as stopped, after a few misses and not one', async ($, on) => {
-  const machine = machineOf({ env: HERDR, screen: typed => `$ ${typed}\nrunning\n` })
+  const machine = machineOf({ env: HERDR, screen: typed => `$ ${cmdOf(typed)}\nrunning\n` })
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   machine.gone = new Set(['w1:p1'])
@@ -313,7 +317,7 @@ test('/rp alone opens the Run pane in a multiplexer too', async ($, on) => {
   expect(machine.opened).toEqual(['run'])
 })
 
-test('a pane with nothing running in it is used again, and each run is read by its own token', async ($, on) => {
+test('a pane with nothing running in it is used again, and no new pane is split', async ($, on) => {
   const machine = machineOf({ env: HERDR, screen: finishing(0) })
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
@@ -324,14 +328,13 @@ test('a pane with nothing running in it is used again, and each run is read by i
   await gt($, 'npm test')
 
   expect(machine.calls.filter(argv => argv[2] === 'split')).toHaveLength(1)
-  const typed = machine.calls.filter(argv => argv[2] === 'run').map(argv => argv[4] as string)
-  expect(typed).toHaveLength(2)
-  expect(typed.every(line => machine.calls.some(argv => argv[3] === 'w1:p1' && argv[4] === line))).toBe(true)
-  expect(tokenOf(typed[0] as string)).not.toBe(tokenOf(typed[1] as string))
+  const typed = machine.calls.filter(argv => argv[2] === 'run')
+  expect(typed.map(argv => argv[3])).toEqual(['w1:p1', 'w1:p1'])
+  expect(typed.map(argv => cmdOf(argv[4] as string))).toEqual(['npm run lint', 'npm test'])
 })
 
 test('a pane is not used again while a run of the mod is in it, nor while the person has something running in it', async ($, on) => {
-  const running = machineOf({ env: HERDR, screen: typed => `$ ${typed}\nready\n` })
+  const running = machineOf({ env: HERDR, screen: typed => `$ ${cmdOf(typed)}\nready\n` })
   engine(on, running)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'npm run dev')

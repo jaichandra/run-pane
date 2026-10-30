@@ -91,7 +91,7 @@ When Claude Code runs inside [herdr](https://herdr.dev) (`HERDR_ENV=1`) or tmux 
 
 - `/rp <command>` types the command into the pane of the last run if nothing is running in it (none of this plugin's runs, and no command of yours: its shell is at the prompt). Otherwise, or for the first run, it splits a new pane (the first on the right of Claude Code, the next ones below the last) and types it there. It then follows what the pane shows. Your focus stays where it was. The pane is a real terminal: click into it to answer a prompt or use an editor. `/rp <command>` leaves the Run pane shut, since the command is already in front of you; `/rp` alone opens it, listing the runs with their output and exit codes, and `run_output` returns them to Claude as before.
 - Stop types Ctrl+C into the pane; if the command ignores it for 30 s, or Force kill is pressed, the pane is closed. A finished run's pane stays open, so you can read it and the next command can use it. Remove closes it unless another run's output is on it too. Restart types the command again, in the same pane if it is free. Closing a pane yourself ends its run as stopped.
-- The command is typed as one `sh -c '...'` line with everything single-quoted, so it runs the same whichever shell the pane has (bash, zsh, fish), and what it reports at the end, with a word of its own for each run, is how the Run pane knows its exit code and tells runs in the same pane apart. That line shows in the pane.
+- The command is typed as one short line, `sh <plugin>/hooks/rp-run.sh '<command>'`, with the command single-quoted, so it runs the same whichever shell the pane has (bash, zsh, fish). The script clears the pane, shows the command, runs it in a login shell and ends with its exit code on a dim line (`── exit 0`), which is how the Run pane knows the command is over. So the pane shows only the command and its result, and whatever was on it before is cleared (a reused pane starts clean).
 - If a pane cannot be made, the command runs as before, as a process of the plugin, so `/rp` never stops working because of the multiplexer.
 - The output is read back about twice a second and holds the last 2000 lines.
 - To turn this off, set `"multiplexer": false` in `hooks/run-pane.json` (see below).
@@ -134,7 +134,8 @@ The mod is a hooks module in TypeScript with no build step:
 | `hooks/register.tsx` | The commands, the tool, the pane and the processes. |
 | `hooks/run.ts` | Logic with no engine in it: the output log, colouring, suggestions, the process tree. |
 | `hooks/shell.ts` | The AppleScript for `/shell` and the words it answers with. |
-| `hooks/mux.ts` | Logic with no engine in it for herdr and tmux: telling which one it is, the pane commands, the line typed into a pane, reading its exit code back. |
+| `hooks/rp-run.sh` | The script a multiplexer pane runs: clears the pane, shows the command, runs it and prints its exit code. |
+| `hooks/mux.ts` | Logic with no engine in it for herdr and tmux: telling which one it is, the pane commands, the line typed into a pane, reading its output and exit code back. |
 | `types/index.d.ts` | The pane's state, declared for the engine. |
 | `tests/` | Tests: `run.test.ts`, `shell-script.test.ts` and `mux.test.ts` for the logic, `pane.test.tsx`, `shell.test.tsx` and `mux-pane.test.tsx` for the mod running against a stand-in engine. |
 

@@ -97,46 +97,31 @@ export const driver = (mux: Mux): MuxDriver => (mux === 'herdr' ? herdr : tmux)
  * nothing is special, and a single quote itself is closed, escaped and reopened. */
 export const shQuote = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`
 
-export const EXIT_MARKER = '@@run-pane-exit'
-
-// Runs `$1` in a login shell, then says how it ended, with `$2`: a word that is this run's alone, so a
-// pane that ran other commands before (this mod's, in the same pane) never has its old ends read as this one's. `trap :` catches Ctrl+C (a caught signal is
-// reset by `exec`, so the command still gets it) and keeps this shell alive to print the marker. `--` keeps
-// a command that starts with a dash from being read as options.
-const WRAPPER = `trap : INT; sh -lc -- "$1"; c=$?; printf "\\n${EXIT_MARKER} %s %s\\n" "$2" "$c"`
-
-/** What to type into a pane to run `cmd` the way the Run pane does: the wrapper and the command are
- * single-quoted, so the pane's own shell never reads them, whichever shell it is. */
-export const typedLine = (cmd: string, token: string): string => `sh -c ${shQuote(WRAPPER)} sh ${shQuote(cmd)} ${shQuote(token)}`
+/** What to type into a pane to run `cmd`: the script that clears the pane, shows the command, runs it and
+ * reports how it ended (hooks/rp-run.sh). Both words are single-quoted, so the pane's own shell never reads
+ * the command, whichever shell it is. */
+export const typedLine = (script: string, cmd: string): string => `sh ${shQuote(script)} ${shQuote(cmd)}`
 
 export type PaneRead = { text: string; code?: number }
 
-const escaped = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+// The line the script ends with: dim, two box-drawing dashes and the exit code.
+const FOOTER = /^\u2500\u2500 exit (\d+)\s*$/
+const SGR = /\u001b\[[0-9;]*m/g
 
-/** What a pane showed, as the output of the command typed into it with `token`: nothing before the line
- * that was typed (the shell's banner and earlier commands, whose own ends carry other tokens), nothing
- * after the marker (the next prompt), and the exit code when the marker is there. Before the typed line
- * has shown up at all there is nothing to read. */
-export function readPane(shown: string, token: string): PaneRead {
-  const lines = shown.replace(/\r/g, '').split('\n')
-  const marker = new RegExp(`^${EXIT_MARKER} ${escaped(token)} (\\d+)\\s*$`)
-  // The typed line holds the marker's name inside the wrapper, and the token; the marker is a line of its own.
-  let typed = -1
-  for (let at = lines.length - 1; at >= 0 && typed < 0; at--) {
-    const line = lines[at] as string
-    if (line.includes(EXIT_MARKER) && line.includes(token) && !marker.test(line)) typed = at
-  }
-  let out = lines.slice(typed + 1)
-  const ended = out.findIndex(line => marker.test(line))
-  if (typed < 0 && ended < 0) return { text: '' }
+/** What a pane showed, as the command's output: the command's own line at the top (the Run pane lists the
+ * command already) and the footer at the end, with the exit code when the footer is there, are not part of
+ * it; nor is anything after the footer (the next prompt). */
+export function readPane(shown: string, cmd: string): PaneRead {
+  let out = shown.replace(/\r/g, '').replace(SGR, '').split('\n')
   let code: number | undefined
-  if (ended >= 0) {
-    code = Number(marker.exec(out[ended] as string)?.[1])
-    out = out.slice(0, ended)
-    // The wrapper puts a blank line before the marker, so the output may end without a newline.
-    if (out[out.length - 1] === '') out.pop()
-  } else {
-    while (out.length > 0 && out[out.length - 1] === '') out.pop()
+  for (let at = out.length - 1; at >= 0 && code === undefined; at--) {
+    const found = FOOTER.exec(out[at] as string)
+    if (found) {
+      code = Number(found[1])
+      out = out.slice(0, at)
+    }
   }
+  if (out[0] === `$ ${cmd}`) out = out.slice(1)
+  while (out.length > 0 && out[out.length - 1] === '') out.pop()
   return { text: out.join('\n'), ...(code === undefined ? {} : { code }) }
 }

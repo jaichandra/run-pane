@@ -46,8 +46,6 @@ type Run = {
   // Set when the command runs in a pane of the person's multiplexer instead of a process of this mod.
   mux?: Mux
   pane?: string
-  // Told from the other runs in the same pane by the end each prints.
-  token?: string
   // Stop was asked: however the process ends, the run reads stopped.
   isStopping?: boolean
   // Force kill was pressed: no more waiting.
@@ -215,8 +213,6 @@ async function findMux($: EngineInterface): Promise<Mux | undefined> {
 }
 
 const MUX_MS = 5_000
-// Starts every run's token, so those of an earlier session's runs, still on a pane's screen, are never this one's.
-const nonce = Math.random().toString(36).slice(2, 8)
 const GONE_POLLS = 3
 
 async function closePane($: EngineInterface, mux: Mux, pane: string): Promise<void> {
@@ -261,13 +257,12 @@ async function splitPane($: EngineInterface, mux: Mux, cwd: string): Promise<str
 // be made or typed into, so the run can go on as a process of this mod instead.
 async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Promise<'stop'>): Promise<boolean> {
   const d = driver(mux)
-  const token = `${nonce}${run.id}`
   let pane: string | undefined
   try {
     // A pane with nothing running in it is used again; only a busy one (or none) is a reason for a new one.
     pane = (await idlePane($, mux, run)) ?? (await splitPane($, mux, run.cwd))
     if (!pane) return false
-    for (const argv of d.type(pane, typedLine(run.cmd, token))) {
+    for (const argv of d.type(pane, typedLine(`${$.plugin.root}/hooks/rp-run.sh`, run.cmd))) {
       const typed = await $.process.run(argv, { timeoutMs: MUX_MS })
       if (typed.exitCode !== 0) throw new Error(oneLine(typed.stderr || typed.stdout))
     }
@@ -283,7 +278,6 @@ async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Prom
   }
   run.mux = mux
   run.pane = pane
-  run.token = token
   const id = pane
   void (async () => {
     let misses = 0
@@ -302,7 +296,7 @@ async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Prom
         return
       }
       misses = 0
-      const { text, code } = readPane(shown.stdout, token)
+      const { text, code } = readPane(shown.stdout, run.cmd)
       if (text !== last) {
         last = text
         run.log.clear()

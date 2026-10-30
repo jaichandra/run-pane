@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { detectMux, driver, EXIT_MARKER, readPane, shQuote, typedLine } from '../hooks/mux'
+import { detectMux, driver, readPane, shQuote, typedLine } from '../hooks/mux'
 
 test('herdr is told by HERDR_ENV=1 with a pane, tmux by TMUX with a pane, and herdr wins inside tmux', () => {
   expect(detectMux({ herdrEnv: '1', herdrPane: 'w4:p1' })).toBe('herdr')
@@ -18,12 +18,10 @@ test('a shell word is single-quoted and a quote in it is closed, escaped and reo
   expect(shQuote('')).toBe("''")
 })
 
-test('the typed line is sh -c with the fixed wrapper and the command, both as one word each', () => {
-  const line = typedLine("make 'all'", 'k3v1')
-  expect(line.startsWith("sh -c 'trap : INT; sh -lc -- \"$1\"; c=$?; printf ")).toBe(true)
-  expect(line.endsWith(` sh 'make '\\''all'\\''' 'k3v1'`)).toBe(true)
-  expect(line).toContain(EXIT_MARKER)
-  expect(line).not.toContain('\n')
+test('the typed line is the script and the command, one single-quoted word each, on one line', () => {
+  expect(typedLine('/p/hooks/rp-run.sh', "make 'all'")).toBe(`sh '/p/hooks/rp-run.sh' 'make '\\''all'\\'''`)
+  expect(typedLine('/my dir/rp-run.sh', 'ls')).toBe("sh '/my dir/rp-run.sh' 'ls'")
+  expect(typedLine('/p/rp-run.sh', 'a\nb')).toContain('a\nb')
 })
 
 test('herdr: split, type, read, interrupt and close are argument vectors', () => {
@@ -62,34 +60,25 @@ test('tmux: split keeps the focus unless asked, and a typed line cannot be read 
   expect(d.close('%4')).toEqual(['tmux', 'kill-pane', '-t', '%4'])
 })
 
-test('a pane read is the command output: after the typed line, before the marker, with its exit code', () => {
-  const typed = typedLine('echo hi', 'k1')
-  const shown = `$ old command\nold output\n$ ${typed}\nhi\n\n${EXIT_MARKER} k1 3\n$ \n\n\n`
-  expect(readPane(shown, 'k1')).toEqual({ text: 'hi', code: 3 })
+const DASH = '\u2500\u2500'
+
+test('a pane read is the command output: no command line above it, no footer and no prompt below it, and the exit code', () => {
+  const shown = `$ echo hi\nhi\n\n${DASH} exit 3\n$ \n\n\n`
+  expect(readPane(shown, 'echo hi')).toEqual({ text: 'hi', code: 3 })
 })
 
 test('while the command runs there is no code, and the empty lines a tmux capture pads with are dropped', () => {
-  const shown = `$ ${typedLine('npm run dev', 'k1')}\nready on :3000\n\n\n\n`
-  expect(readPane(shown, 'k1')).toEqual({ text: 'ready on :3000' })
-  expect(readPane('', 'k1')).toEqual({ text: '' })
+  expect(readPane('$ npm run dev\nready on :3000\n\n\n\n', 'npm run dev')).toEqual({ text: 'ready on :3000' })
+  expect(readPane('', 'x')).toEqual({ text: '' })
 })
 
-test('output that ends without a newline keeps its last line, and a marker alone is not taken for the typed line', () => {
-  expect(readPane(`$ ${typedLine('printf x', 'k1')}\nx\n${EXIT_MARKER} k1 0\n$ `, 'k1')).toEqual({ text: 'x', code: 0 })
-  // The typed line scrolled out of what was read: everything before the marker is output.
-  expect(readPane(`tail of output\n\n${EXIT_MARKER} k1 130\n$ `, 'k1')).toEqual({ text: 'tail of output', code: 130 })
-  // A command that prints the marker's name is not its end.
-  expect(readPane(`$ ${typedLine('echo x', 'k1')}\nthe ${EXIT_MARKER} word\n`, 'k1')).toEqual({ text: `the ${EXIT_MARKER} word` })
+test('output that ends without a newline keeps its last line, and colours are not part of the footer', () => {
+  expect(readPane(`$ printf x\nx\n\u001b[2m${DASH} exit 0\u001b[0m\n$ `, 'printf x')).toEqual({ text: 'x', code: 0 })
 })
 
-test('in a pane that ran other commands only the run with this token is read, and nothing before it is typed', () => {
-  const first = `$ ${typedLine('make', 'k1')}\nbuilt\n\n${EXIT_MARKER} k1 0\n`
-  // The second command is typed but has not echoed yet: the first one's end is not its end.
-  expect(readPane(`${first}$ `, 'k2')).toEqual({ text: '' })
-  expect(readPane(`${first}$ ${typedLine('make test', 'k2')}\nrunning\n`, 'k2')).toEqual({ text: 'running' })
-  expect(readPane(`${first}$ ${typedLine('make test', 'k2')}\nok\n\n${EXIT_MARKER} k2 1\n$ `, 'k2')).toEqual({ text: 'ok', code: 1 })
-  // The first run's own text is still read as its own.
-  expect(readPane(`${first}$ ${typedLine('make test', 'k2')}\nok\n`, 'k1')).toEqual({ text: 'built', code: 0 })
+test('the command line is dropped only where it is the first line, and a footer-like word inside a line is not the end', () => {
+  expect(readPane('$ echo $ echo\nthe $ echo word\n', 'echo')).toEqual({ text: '$ echo $ echo\nthe $ echo word' })
+  expect(readPane(`$ echo x\nsee ${DASH} exit 4 here\n`, 'echo x')).toEqual({ text: `see ${DASH} exit 4 here` })
 })
 
 test('a shell is idle when it leads its terminal: herdr by its process info, tmux by ps', () => {
