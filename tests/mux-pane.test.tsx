@@ -146,7 +146,7 @@ test('in herdr /rp splits a pane on the right, types the command as it is and st
 
   // The command is in the herdr pane already: the Run pane stays shut until /rp asks for it.
   machine.opened = []
-  expect((await gt($, 'npm test')).text).toBe('Started #1 in a herdr pane: npm test. /rp opens the Run pane.')
+  expect((await gt($, 'npm test')).text).toBe('$ npm test')
   expect(machine.opened).toEqual([])
   expect(machine.spawned).toEqual([])
   expect(machine.calls.find(argv => argv[2] === 'split')).toEqual(['herdr', 'pane', 'split', '--current', '--direction', 'right', '--cwd', '/w/sample-app', '--no-focus'])

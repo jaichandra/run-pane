@@ -425,9 +425,9 @@ async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean
     return 'Run pane closed. Commands keep running; /rp shows them again.'
   }
   // In a multiplexer pane the command is in front of the person already: the Run pane stays shut, and
-  // /rp alone opens it. If no pane could be made the run is a process of this mod, and the pane shows it.
+  // /rp alone opens it. The reply is the command as `! cmd` shows it, no more. If no pane could be made the run is a process of this mod, and the pane shows it.
   const run = cmd === '' ? undefined : await start($, cmd)
-  if (run?.mux) return `Started #${run.id} in a ${run.mux} pane: ${cmd}. /rp opens the Run pane.`
+  if (run?.mux) return `$ ${cmd}`
   const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true, columns: DOCK_COLUMNS })
   showStatus($)
   // Docked beside the transcript only in the fullscreen layout; otherwise it sits above the prompt.
