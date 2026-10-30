@@ -46,6 +46,8 @@ type Run = {
   // Set when the command runs in a pane of the person's multiplexer instead of a process of this mod.
   mux?: Mux
   pane?: string
+  // Told from the other runs in the same pane by the end each prints.
+  token?: string
   // Stop was asked: however the process ends, the run reads stopped.
   isStopping?: boolean
   // Force kill was pressed: no more waiting.
@@ -213,6 +215,8 @@ async function findMux($: EngineInterface): Promise<Mux | undefined> {
 }
 
 const MUX_MS = 5_000
+// Starts every run's token, so those of an earlier session's runs, still on a pane's screen, are never this one's.
+const nonce = Math.random().toString(36).slice(2, 8)
 const GONE_POLLS = 3
 
 async function closePane($: EngineInterface, mux: Mux, pane: string): Promise<void> {
@@ -220,9 +224,23 @@ async function closePane($: EngineInterface, mux: Mux, pane: string): Promise<vo
   await $.process.run(driver(mux).close(pane), { timeoutMs: MUX_MS }).catch(() => undefined)
 }
 
-// A finished run's pane goes with it when the run is removed or started again.
+// A finished run's pane goes with it when the run is removed, unless another run's output is on it too.
 function dismiss($: EngineInterface, run: Run): void {
-  if (run.mux && run.pane) void closePane($, run.mux, run.pane)
+  const pane = run.pane
+  if (run.mux && pane && !runs.some(one => one.pane === pane)) void closePane($, run.mux, pane)
+}
+
+// The pane of the last run, when nothing runs in it: none of this mod's runs, and nothing the person
+// started there, so its shell is at the prompt. Claimed for `run` at once, before anything else can type there.
+async function idlePane($: EngineInterface, mux: Mux, run: Run): Promise<string | undefined> {
+  const id = lastPane?.mux === mux ? lastPane.id : undefined
+  if (!id || runs.some(one => one !== run && one.status === 'running' && one.pane === id)) return undefined
+  const asked = await $.process.run(driver(mux).idle(id), { timeoutMs: MUX_MS }).catch(() => undefined)
+  if (!asked || asked.exitCode !== 0 || !driver(mux).isIdle(asked.stdout)) return undefined
+  if (runs.some(one => one !== run && one.status === 'running' && one.pane === id)) return undefined
+  run.mux = mux
+  run.pane = id
+  return id
 }
 
 // A new pane next to the last run's (below it), or next to the one Claude Code runs in (on its right).
@@ -243,20 +261,29 @@ async function splitPane($: EngineInterface, mux: Mux, cwd: string): Promise<str
 // be made or typed into, so the run can go on as a process of this mod instead.
 async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Promise<'stop'>): Promise<boolean> {
   const d = driver(mux)
+  const token = `${nonce}${run.id}`
   let pane: string | undefined
   try {
-    pane = await splitPane($, mux, run.cwd)
+    // A pane with nothing running in it is used again; only a busy one (or none) is a reason for a new one.
+    pane = (await idlePane($, mux, run)) ?? (await splitPane($, mux, run.cwd))
     if (!pane) return false
-    for (const argv of d.type(pane, typedLine(run.cmd))) {
+    for (const argv of d.type(pane, typedLine(run.cmd, token))) {
       const typed = await $.process.run(argv, { timeoutMs: MUX_MS })
       if (typed.exitCode !== 0) throw new Error(oneLine(typed.stderr || typed.stdout))
     }
   } catch {
-    if (pane) await closePane($, mux, pane)
+    // A pane made for this run goes; one that was in use before stays.
+    if (pane && pane === run.pane) {
+      run.pane = undefined
+      run.mux = undefined
+    } else if (pane) {
+      await closePane($, mux, pane)
+    }
     return false
   }
   run.mux = mux
   run.pane = pane
+  run.token = token
   const id = pane
   void (async () => {
     let misses = 0
@@ -275,7 +302,7 @@ async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Prom
         return
       }
       misses = 0
-      const { text, code } = readPane(shown.stdout)
+      const { text, code } = readPane(shown.stdout, token)
       if (text !== last) {
         last = text
         run.log.clear()
@@ -498,7 +525,6 @@ export const register: Register = on => {
             label="Restart"
             onPress={() => {
               runs.splice(runs.indexOf(picked), 1)
-              dismiss($, picked)
               void start($, picked.cmd)
             }}
           />

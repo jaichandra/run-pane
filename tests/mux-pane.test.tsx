@@ -3,6 +3,9 @@ import type { On } from 'claude-code'
 
 import { EXIT_MARKER, typedLine } from '../hooks/mux'
 
+// The word that tells a run's end from another's: the last quoted word of the line typed for it.
+const tokenOf = (line: string): string => /'([a-z0-9]+)'$/.exec(line)?.[1] ?? ''
+
 // Nothing here starts herdr or tmux: `process.run` is answered by the stub below, which keeps a pane's
 // screen the way the multiplexer would show it, and records what it was asked to run.
 const PANE = {
@@ -26,6 +29,8 @@ type Machine = {
   screen?: (typed: string, reads: number, isInterrupted: boolean) => string
   /** Panes the multiplexer no longer has. */
   gone?: Set<string>
+  /** Panes with a command of the person's running in them. */
+  busy?: Set<string>
   /** Whether splitting fails. */
   isSplitBroken?: boolean
   settings?: string
@@ -71,6 +76,13 @@ function engine(on: On, machine: Machine): void {
     const argv = [...e.argv]
     machine.calls.push(argv)
     const [bin, ...rest] = argv
+    // Whether a pane's shell is at its prompt: herdr's process info, tmux's ps.
+    if ((bin === 'herdr' && rest[1] === 'process-info') || (bin === 'sh' && rest[0] === '-c')) {
+      const pane = argv[argv.length - 1] as string
+      if (machine.gone?.has(pane)) return done('', 1, "can't find pane")
+      const group = machine.busy?.has(pane) ? 99 : 41
+      return done(bin === 'herdr' ? JSON.stringify({ result: { process_info: { foreground_process_group_id: group, shell_pid: 41 } } }) : ` 41 ${group}\n`)
+    }
     if (bin === 'herdr' || bin === 'tmux') {
       const isHerdr = bin === 'herdr'
       const verb = isHerdr ? rest[1] : rest[0]
@@ -118,7 +130,7 @@ const TMUX = { TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%0' }
 
 // A command that prints a line and exits with a code on its second look.
 const finishing = (code: number) => (typed: string, reads: number) =>
-  reads < 2 ? `$ ${typed}\nbuilding\n` : `$ ${typed}\nbuilding\ndone\n\n${EXIT_MARKER} ${code}\n$ `
+  reads < 2 ? `$ ${typed}\nbuilding\n` : `$ ${typed}\nbuilding\ndone\n\n${EXIT_MARKER} ${tokenOf(typed)} ${code}\n$ `
 
 test('in herdr /rp splits a pane on the right, types the wrapped command and starts no process of its own', async ($, on) => {
   const machine = machineOf({ env: HERDR, screen: finishing(0) })
@@ -131,7 +143,9 @@ test('in herdr /rp splits a pane on the right, types the wrapped command and sta
   expect(machine.opened).toEqual([])
   expect(machine.spawned).toEqual([])
   expect(machine.calls[0]).toEqual(['herdr', 'pane', 'split', '--current', '--direction', 'right', '--cwd', '/w/sample-app', '--no-focus'])
-  expect(machine.calls[1]).toEqual(['herdr', 'pane', 'run', 'w1:p1', typedLine('npm test')])
+  const typed = machine.calls[1] as string[]
+  expect(typed.slice(0, 4)).toEqual(['herdr', 'pane', 'run', 'w1:p1'])
+  expect(typed[4]).toBe(typedLine('npm test', tokenOf(typed[4] as string)))
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /done/ })).toBeDefined()
@@ -147,15 +161,17 @@ test('in tmux the same: a detached split, the line typed literally, then Enter',
   await gt($, 'make')
 
   expect(machine.calls[0]).toEqual(['tmux', 'split-window', '-d', '-h', '-P', '-F', '#{pane_id}', '-c', '/w/sample-app'])
-  expect(machine.calls[1]).toEqual(['tmux', 'send-keys', '-t', '%1', '-l', '--', typedLine('make')])
+  const typed = machine.calls[1] as string[]
+  expect(typed.slice(0, 5)).toEqual(['tmux', 'send-keys', '-t', '%1', '-l'])
+  expect(typed[6]).toBe(typedLine('make', tokenOf(typed[6] as string)))
   expect(machine.calls[2]).toEqual(['tmux', 'send-keys', '-t', '%1', 'Enter'])
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /exit 2/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('the next run is split from the last run pane, below it', async ($, on) => {
-  const machine = machineOf({ env: HERDR, screen: finishing(0) })
+test('the next run is split from the last run pane, below it, when something runs in that pane', async ($, on) => {
+  const machine = machineOf({ env: HERDR, screen: finishing(0), busy: new Set(['w1:p1']) })
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'npm run lint')
@@ -181,7 +197,7 @@ test('when the last run pane was closed, the next run starts a column again', as
 test('Stop types Ctrl+C into the pane and the run reads stopped when the wrapper reports 130', async ($, on) => {
   const machine = machineOf({
     env: HERDR,
-    screen: (typed, _reads, isInterrupted) => (isInterrupted ? `$ ${typed}\nready\n^C\n\n${EXIT_MARKER} 130\n$ ` : `$ ${typed}\nready\n`),
+    screen: (typed, _reads, isInterrupted) => (isInterrupted ? `$ ${typed}\nready\n^C\n\n${EXIT_MARKER} ${tokenOf(typed)} 130\n$ ` : `$ ${typed}\nready\n`),
   })
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
@@ -295,4 +311,46 @@ test('/rp alone opens the Run pane in a multiplexer too', async ($, on) => {
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, '')
   expect(machine.opened).toEqual(['run'])
+})
+
+test('a pane with nothing running in it is used again, and each run is read by its own token', async ($, on) => {
+  const machine = machineOf({ env: HERDR, screen: finishing(0) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm run lint')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.find({ key: 'restart:1' })
+  await ui.unmount()
+  await gt($, 'npm test')
+
+  expect(machine.calls.filter(argv => argv[2] === 'split')).toHaveLength(1)
+  const typed = machine.calls.filter(argv => argv[2] === 'run').map(argv => argv[4] as string)
+  expect(typed).toHaveLength(2)
+  expect(typed.every(line => machine.calls.some(argv => argv[3] === 'w1:p1' && argv[4] === line))).toBe(true)
+  expect(tokenOf(typed[0] as string)).not.toBe(tokenOf(typed[1] as string))
+})
+
+test('a pane is not used again while a run of the mod is in it, nor while the person has something running in it', async ($, on) => {
+  const running = machineOf({ env: HERDR, screen: typed => `$ ${typed}\nready\n` })
+  engine(on, running)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm run dev')
+  await gt($, 'npm run lint')
+  // The first is still running: the second gets a pane of its own, below it.
+  expect(running.calls.filter(argv => argv[2] === 'split').map(argv => argv[3])).toEqual(['--current', 'w1:p1'])
+})
+
+test('a busy pane of the person gets a new one, a closed one too', async ($, on) => {
+  const machine = machineOf({ env: TMUX, screen: finishing(0) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'make a')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.find({ key: 'restart:1' })
+  await ui.unmount()
+
+  machine.busy = new Set(['%1'])
+  await gt($, 'make b')
+  expect(machine.calls.filter(argv => argv[1] === 'split-window')).toHaveLength(2)
+  expect(machine.calls.filter(argv => argv[1] === 'split-window')[1]).toEqual(['tmux', 'split-window', '-d', '-v', '-P', '-F', '#{pane_id}', '-c', '/w/sample-app', '-t', '%1'])
 })

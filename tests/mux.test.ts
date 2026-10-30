@@ -19,9 +19,9 @@ test('a shell word is single-quoted and a quote in it is closed, escaped and reo
 })
 
 test('the typed line is sh -c with the fixed wrapper and the command, both as one word each', () => {
-  const line = typedLine("make 'all'")
+  const line = typedLine("make 'all'", 'k3v1')
   expect(line.startsWith("sh -c 'trap : INT; sh -lc -- \"$1\"; c=$?; printf ")).toBe(true)
-  expect(line.endsWith(` sh 'make '\\''all'\\'''`)).toBe(true)
+  expect(line.endsWith(` sh 'make '\\''all'\\''' 'k3v1'`)).toBe(true)
   expect(line).toContain(EXIT_MARKER)
   expect(line).not.toContain('\n')
 })
@@ -63,21 +63,49 @@ test('tmux: split keeps the focus unless asked, and a typed line cannot be read 
 })
 
 test('a pane read is the command output: after the typed line, before the marker, with its exit code', () => {
-  const typed = typedLine('echo hi')
-  const shown = `$ old command\nold output\n$ ${typed}\nhi\n\n${EXIT_MARKER} 3\n$ \n\n\n`
-  expect(readPane(shown)).toEqual({ text: 'hi', code: 3 })
+  const typed = typedLine('echo hi', 'k1')
+  const shown = `$ old command\nold output\n$ ${typed}\nhi\n\n${EXIT_MARKER} k1 3\n$ \n\n\n`
+  expect(readPane(shown, 'k1')).toEqual({ text: 'hi', code: 3 })
 })
 
 test('while the command runs there is no code, and the empty lines a tmux capture pads with are dropped', () => {
-  const shown = `$ ${typedLine('npm run dev')}\nready on :3000\n\n\n\n`
-  expect(readPane(shown)).toEqual({ text: 'ready on :3000' })
-  expect(readPane('')).toEqual({ text: '' })
+  const shown = `$ ${typedLine('npm run dev', 'k1')}\nready on :3000\n\n\n\n`
+  expect(readPane(shown, 'k1')).toEqual({ text: 'ready on :3000' })
+  expect(readPane('', 'k1')).toEqual({ text: '' })
 })
 
 test('output that ends without a newline keeps its last line, and a marker alone is not taken for the typed line', () => {
-  expect(readPane(`$ ${typedLine('printf x')}\nx\n${EXIT_MARKER} 0\n$ `)).toEqual({ text: 'x', code: 0 })
+  expect(readPane(`$ ${typedLine('printf x', 'k1')}\nx\n${EXIT_MARKER} k1 0\n$ `, 'k1')).toEqual({ text: 'x', code: 0 })
   // The typed line scrolled out of what was read: everything before the marker is output.
-  expect(readPane(`tail of output\n\n${EXIT_MARKER} 130\n$ `)).toEqual({ text: 'tail of output', code: 130 })
+  expect(readPane(`tail of output\n\n${EXIT_MARKER} k1 130\n$ `, 'k1')).toEqual({ text: 'tail of output', code: 130 })
   // A command that prints the marker's name is not its end.
-  expect(readPane(`$ ${typedLine('echo x')}\nthe ${EXIT_MARKER} word\n`)).toEqual({ text: `the ${EXIT_MARKER} word` })
+  expect(readPane(`$ ${typedLine('echo x', 'k1')}\nthe ${EXIT_MARKER} word\n`, 'k1')).toEqual({ text: `the ${EXIT_MARKER} word` })
+})
+
+test('in a pane that ran other commands only the run with this token is read, and nothing before it is typed', () => {
+  const first = `$ ${typedLine('make', 'k1')}\nbuilt\n\n${EXIT_MARKER} k1 0\n`
+  // The second command is typed but has not echoed yet: the first one's end is not its end.
+  expect(readPane(`${first}$ `, 'k2')).toEqual({ text: '' })
+  expect(readPane(`${first}$ ${typedLine('make test', 'k2')}\nrunning\n`, 'k2')).toEqual({ text: 'running' })
+  expect(readPane(`${first}$ ${typedLine('make test', 'k2')}\nok\n\n${EXIT_MARKER} k2 1\n$ `, 'k2')).toEqual({ text: 'ok', code: 1 })
+  // The first run's own text is still read as its own.
+  expect(readPane(`${first}$ ${typedLine('make test', 'k2')}\nok\n`, 'k1')).toEqual({ text: 'built', code: 0 })
+})
+
+test('a shell is idle when it leads its terminal: herdr by its process info, tmux by ps', () => {
+  const herdr = driver('herdr')
+  const info = (group: number) => JSON.stringify({ result: { process_info: { foreground_process_group_id: group, shell_pid: 41 } } })
+  expect(herdr.idle('w4:p5')).toEqual(['herdr', 'pane', 'process-info', '--pane', 'w4:p5'])
+  expect(herdr.isIdle(info(41))).toBe(true)
+  expect(herdr.isIdle(info(99))).toBe(false)
+  expect(herdr.isIdle('not json')).toBe(false)
+  expect(herdr.isIdle('{}')).toBe(false)
+
+  const tmux = driver('tmux')
+  expect(tmux.idle('%4').slice(0, 2)).toEqual(['sh', '-c'])
+  expect(tmux.idle('%4').at(-1)).toBe('%4')
+  expect(tmux.idle('%4')[2]).not.toContain('%4')
+  expect(tmux.isIdle(' 4113606 4113606\n')).toBe(true)
+  expect(tmux.isIdle(' 4113606 4113674\n')).toBe(false)
+  expect(tmux.isIdle('')).toBe(false)
 })
