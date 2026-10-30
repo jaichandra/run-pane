@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- The prompt box is cleared again just after the engine puts the submitted `> <command>` back, so it is really empty.
+
 ## 0.1.2
 
 - The prompt box is cleared after a `> <command>` runs, ready for the next one.

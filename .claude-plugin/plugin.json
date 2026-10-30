@@ -1,6 +1,6 @@
 {
   "name": "run-pane",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A Run pane for Claude Code: start, watch and stop dev servers, test runs and other commands in a pane beside the chat, let Claude read their output, and open a shell in the same folder",
   "author": {
     "name": "jaichandra"

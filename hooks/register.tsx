@@ -298,8 +298,11 @@ export const register: Register = on => {
   on('prompt.submit', async ($, e, next) => {
     if (e.command || e.isMeta || e.origin.kind !== 'composer' || !e.text.startsWith('>')) return next(e)
     const drop = await runPrompt($, e.text.slice(1))
-    // A dropped prompt stays in the box; empty it so the next command can be typed straight away.
-    await $.prompt.fill({ text: '' }).catch(() => undefined)
+    // A dropped prompt is put back in the box once this hook returns; empty it just after, so the next
+    // command can be typed straight away.
+    const clear = () => void $.prompt.fill({ text: '' }).catch(() => undefined)
+    clear()
+    $.clock.after(50, clear)
     return { drop }
   })
 
