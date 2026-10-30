@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4
+
+- The notice for a pane above the prompt now says what is wrong: it is a limited view whose buttons may not respond, and the full pane (on the right, buttons working) needs the flicker-free display mode, `CLAUDE_CODE_NO_FLICKER=1 claude` (not a maximised window).
+- README: "Turn on the flicker-free display mode" is now the first requirement.
+
 ## 0.2.3
 
 - When the pane sits above the prompt, it shows the `CLAUDE_CODE_NO_FLICKER=1 claude` hint in bold red at its top, where it is hard to miss. The `/rp` reply keeps its plain-text hint (the transcript line cannot be coloured).

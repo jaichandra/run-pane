@@ -255,8 +255,9 @@ async function openShell($: EngineInterface): Promise<string> {
 // Columns the pane asks for while docked beside a fullscreen transcript (the engine caps it at 45%).
 const DOCK_COLUMNS = 60
 
-// Said when the pane sits above the prompt: only the fullscreen layout docks it on the right.
-const DOCK_HINT = 'To dock it on the right, restart with CLAUDE_CODE_NO_FLICKER=1 claude.'
+// Said when the pane sits above the prompt (the main-screen layout): it is a limited view there, and
+// the fullscreen layout is the one that docks it on the right with working buttons.
+const DOCK_HINT = 'Limited view: the buttons may not respond here. For the full pane on the right, restart with CLAUDE_CODE_NO_FLICKER=1 claude.'
 
 // What `/rp` does: open the pane, and start the command if there is one.
 async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean): Promise<string> {
@@ -269,7 +270,7 @@ async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean
   showStatus($)
   // Docked beside the transcript only in the fullscreen layout; otherwise it sits above the prompt.
   const hint = placed.isPlaced && !isFullscreen ? ` ${DOCK_HINT}` : ''
-  if (cmd === '') return placed.isPlaced ? `Run pane opened.${hint}` : 'The Run pane needs a wider terminal (about 110 columns) or the fullscreen layout.'
+  if (cmd === '') return placed.isPlaced ? `Run pane opened.${hint}` : 'The Run pane needs a wider terminal (about 110 columns) or the flicker-free display mode (CLAUDE_CODE_NO_FLICKER=1 claude).'
   const run = await start($, cmd)
   return `Started #${run.id}: ${cmd}${placed.isPlaced ? hint : ' (the Run pane needs a wider terminal to show it)'}`
 }
