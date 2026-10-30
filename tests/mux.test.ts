@@ -1,0 +1,83 @@
+import { expect, test } from 'claude-code/testing'
+
+import { detectMux, driver, EXIT_MARKER, readPane, shQuote, typedLine } from '../hooks/mux'
+
+test('herdr is told by HERDR_ENV=1 with a pane, tmux by TMUX with a pane, and herdr wins inside tmux', () => {
+  expect(detectMux({ herdrEnv: '1', herdrPane: 'w4:p1' })).toBe('herdr')
+  expect(detectMux({ tmux: '/tmp/tmux-1000/default,1,0', tmuxPane: '%3' })).toBe('tmux')
+  expect(detectMux({ herdrEnv: '1', herdrPane: 'w4:p1', tmux: '/tmp/t,1,0', tmuxPane: '%3' })).toBe('herdr')
+  expect(detectMux({})).toBeUndefined()
+  expect(detectMux({ herdrEnv: '0', herdrPane: 'w4:p1' })).toBeUndefined()
+  expect(detectMux({ herdrEnv: '1' })).toBeUndefined()
+  expect(detectMux({ tmux: '/tmp/t,1,0' })).toBeUndefined()
+})
+
+test('a shell word is single-quoted and a quote in it is closed, escaped and reopened', () => {
+  expect(shQuote('npm run dev')).toBe("'npm run dev'")
+  expect(shQuote("echo it's $(rm -rf ~) `x` \"y\"")).toBe(`'echo it'\\''s $(rm -rf ~) \`x\` "y"'`)
+  expect(shQuote('')).toBe("''")
+})
+
+test('the typed line is sh -c with the fixed wrapper and the command, both as one word each', () => {
+  const line = typedLine("make 'all'")
+  expect(line.startsWith("sh -c 'trap : INT; sh -lc -- \"$1\"; c=$?; printf ")).toBe(true)
+  expect(line.endsWith(` sh 'make '\\''all'\\'''`)).toBe(true)
+  expect(line).toContain(EXIT_MARKER)
+  expect(line).not.toContain('\n')
+})
+
+test('herdr: split, type, read, interrupt and close are argument vectors', () => {
+  const d = driver('herdr')
+  expect(d.split({ direction: 'right', cwd: '/w/app', focus: false })).toEqual([
+    'herdr', 'pane', 'split', '--current', '--direction', 'right', '--cwd', '/w/app', '--no-focus',
+  ])
+  expect(d.split({ target: 'w4:p5', direction: 'down', cwd: '/w/app', focus: true })).toEqual([
+    'herdr', 'pane', 'split', 'w4:p5', '--direction', 'down', '--cwd', '/w/app', '--focus',
+  ])
+  expect(d.paneId('{"id":"cli:pane:split","result":{"pane":{"pane_id":"w4:p5"}}}')).toBe('w4:p5')
+  expect(d.paneId('not json')).toBeUndefined()
+  expect(d.paneId('{"error":{"code":"x"}}')).toBeUndefined()
+  expect(d.type('w4:p5', 'ls')).toEqual([['herdr', 'pane', 'run', 'w4:p5', 'ls']])
+  expect(d.read('w4:p5', 2000)).toEqual(['herdr', 'pane', 'read', 'w4:p5', '--source', 'recent-unwrapped', '--lines', '2000', '--format', 'text'])
+  expect(d.interrupt('w4:p5')).toEqual(['herdr', 'pane', 'send-keys', 'w4:p5', 'C-c'])
+  expect(d.close('w4:p5')).toEqual(['herdr', 'pane', 'close', 'w4:p5'])
+})
+
+test('tmux: split keeps the focus unless asked, and a typed line cannot be read as an option', () => {
+  const d = driver('tmux')
+  expect(d.split({ direction: 'right', cwd: '/w/app', focus: false })).toEqual([
+    'tmux', 'split-window', '-d', '-h', '-P', '-F', '#{pane_id}', '-c', '/w/app',
+  ])
+  expect(d.split({ target: '%4', direction: 'down', cwd: '/w/app', focus: true })).toEqual([
+    'tmux', 'split-window', '-v', '-P', '-F', '#{pane_id}', '-c', '/w/app', '-t', '%4',
+  ])
+  expect(d.paneId('%4\n')).toBe('%4')
+  expect(d.paneId('')).toBeUndefined()
+  expect(d.type('%4', '-n x')).toEqual([
+    ['tmux', 'send-keys', '-t', '%4', '-l', '--', '-n x'],
+    ['tmux', 'send-keys', '-t', '%4', 'Enter'],
+  ])
+  expect(d.read('%4', 2000)).toEqual(['tmux', 'capture-pane', '-p', '-J', '-t', '%4', '-S', '-2000'])
+  expect(d.interrupt('%4')).toEqual(['tmux', 'send-keys', '-t', '%4', 'C-c'])
+  expect(d.close('%4')).toEqual(['tmux', 'kill-pane', '-t', '%4'])
+})
+
+test('a pane read is the command output: after the typed line, before the marker, with its exit code', () => {
+  const typed = typedLine('echo hi')
+  const shown = `$ old command\nold output\n$ ${typed}\nhi\n\n${EXIT_MARKER} 3\n$ \n\n\n`
+  expect(readPane(shown)).toEqual({ text: 'hi', code: 3 })
+})
+
+test('while the command runs there is no code, and the empty lines a tmux capture pads with are dropped', () => {
+  const shown = `$ ${typedLine('npm run dev')}\nready on :3000\n\n\n\n`
+  expect(readPane(shown)).toEqual({ text: 'ready on :3000' })
+  expect(readPane('')).toEqual({ text: '' })
+})
+
+test('output that ends without a newline keeps its last line, and a marker alone is not taken for the typed line', () => {
+  expect(readPane(`$ ${typedLine('printf x')}\nx\n${EXIT_MARKER} 0\n$ `)).toEqual({ text: 'x', code: 0 })
+  // The typed line scrolled out of what was read: everything before the marker is output.
+  expect(readPane(`tail of output\n\n${EXIT_MARKER} 130\n$ `)).toEqual({ text: 'tail of output', code: 130 })
+  // A command that prints the marker's name is not its end.
+  expect(readPane(`$ ${typedLine('echo x')}\nthe ${EXIT_MARKER} word\n`)).toEqual({ text: `the ${EXIT_MARKER} word` })
+})

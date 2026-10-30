@@ -70,4 +70,4 @@ export const oneLine = (text: string, max = 200): string => {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line
 }
 
-export const NOT_MACOS = '/shell opens a Terminal or iTerm window, which only works on macOS: open a terminal in this folder yourself.'
+export const NOT_MACOS = '/shell opens a pane in herdr or tmux, or a Terminal or iTerm window on macOS: open a terminal in this folder yourself.'

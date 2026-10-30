@@ -15,6 +15,8 @@ import {
   WRAPPER,
 } from './run'
 import type { PartKind, RunStatus } from './run'
+import { detectMux, driver, readPane, typedLine } from './mux'
+import type { Mux } from './mux'
 import { hasControls, ITERM_PATH, NOT_MACOS, oneLine, osascriptArgv } from './shell'
 import type { TerminalApp } from './shell'
 
@@ -41,6 +43,9 @@ type Run = {
   code: number | null
   log: RunLog
   pid?: number
+  // Set when the command runs in a pane of the person's multiplexer instead of a process of this mod.
+  mux?: Mux
+  pane?: string
   // Stop was asked: however the process ends, the run reads stopped.
   isStopping?: boolean
   // Force kill was pressed: no more waiting.
@@ -65,6 +70,8 @@ const STYLE: Record<Exclude<PartKind, 'plain' | 'url'>, { color?: string; dimCol
 const folderName = (cwd: string): string => cwd.split('/').filter(Boolean).pop() ?? cwd
 
 const runs: Run[] = []
+// The pane the last run went to: the next one is split from it, so the runs stack in one column.
+let lastPane: { mux: Mux; id: string } | undefined
 const hints = new Map<string, string[]>()
 let seq = 0
 let isRedrawQueued = false
@@ -99,8 +106,9 @@ function showStatus($: EngineInterface): void {
 }
 
 // hooks/run-pane.json is optional and meant for whoever bundles the mod: `suggestions` (commands to
-// suggest first) and `openFor` (words that make the pane open by itself). Without it, the defaults.
-type Settings = { suggestions?: unknown; openFor?: unknown }
+// suggest first), `openFor` (words that make the pane open by itself) and `multiplexer` (false keeps
+// the commands out of herdr and tmux panes). Without it, the defaults.
+type Settings = { suggestions?: unknown; openFor?: unknown; multiplexer?: unknown }
 
 async function settings($: EngineInterface): Promise<Settings> {
   try {
@@ -166,7 +174,12 @@ async function stop($: EngineInterface, run: Run): Promise<void> {
   if (run.status !== 'running') return
   run.isStopping = true
   const pid = run.pid
-  if (pid !== undefined) {
+  if (run.mux && run.pane) {
+    // Ctrl+C typed into the pane, as the person would; if it will not end, the pane is closed.
+    await $.process.run(driver(run.mux).interrupt(run.pane), { timeoutMs: MUX_MS }).catch(() => undefined)
+    if (await waitForEnd($, run, INTERRUPT_POLLS)) return
+    await closePane($, run.mux, run.pane)
+  } else if (pid !== undefined) {
     await signal($, pid, 'INT')
     if (await waitForEnd($, run, INTERRUPT_POLLS)) return
     await signal($, pid, 'TERM')
@@ -185,6 +198,99 @@ function finish($: EngineInterface, run: Run, status: RunStatus, code: number | 
   redraw($)
 }
 
+const envOf = (read: Promise<string | undefined>): Promise<string | undefined> => read.catch(() => undefined)
+
+// The multiplexer the session runs in, if any: herdr or tmux, from the variables they set for what runs in them.
+async function findMux($: EngineInterface): Promise<Mux | undefined> {
+  if ((await settings($)).multiplexer === false) return undefined
+  const [herdrEnv, herdrPane, tmux, tmuxPane] = await Promise.all([
+    envOf($.env.get('HERDR_ENV')),
+    envOf($.env.get('HERDR_PANE_ID')),
+    envOf($.env.get('TMUX')),
+    envOf($.env.get('TMUX_PANE')),
+  ])
+  return detectMux({ herdrEnv, herdrPane, tmux, tmuxPane })
+}
+
+const MUX_MS = 5_000
+const GONE_POLLS = 3
+
+async function closePane($: EngineInterface, mux: Mux, pane: string): Promise<void> {
+  if (lastPane?.id === pane) lastPane = undefined
+  await $.process.run(driver(mux).close(pane), { timeoutMs: MUX_MS }).catch(() => undefined)
+}
+
+// A finished run's pane goes with it when the run is removed or started again.
+function dismiss($: EngineInterface, run: Run): void {
+  if (run.mux && run.pane) void closePane($, run.mux, run.pane)
+}
+
+// A new pane next to the last run's (below it), or next to the one Claude Code runs in (on its right).
+async function splitPane($: EngineInterface, mux: Mux, cwd: string): Promise<string | undefined> {
+  const d = driver(mux)
+  const split = async (target: string | undefined): Promise<string | undefined> => {
+    const made = await $.process.run(d.split({ target, direction: target ? 'down' : 'right', cwd, focus: false }), { cwd, timeoutMs: MUX_MS })
+    return made.exitCode === 0 ? d.paneId(made.stdout) : undefined
+  }
+  const parent = lastPane?.mux === mux ? lastPane.id : undefined
+  // The last pane may have been closed since: then start a column again.
+  const id = (parent ? await split(parent).catch(() => undefined) : undefined) ?? (await split(undefined))
+  if (id) lastPane = { mux, id }
+  return id
+}
+
+// Runs the command in a pane of the multiplexer and follows what the pane shows. False when no pane could
+// be made or typed into, so the run can go on as a process of this mod instead.
+async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Promise<'stop'>): Promise<boolean> {
+  const d = driver(mux)
+  let pane: string | undefined
+  try {
+    pane = await splitPane($, mux, run.cwd)
+    if (!pane) return false
+    for (const argv of d.type(pane, typedLine(run.cmd))) {
+      const typed = await $.process.run(argv, { timeoutMs: MUX_MS })
+      if (typed.exitCode !== 0) throw new Error(oneLine(typed.stderr || typed.stdout))
+    }
+  } catch {
+    if (pane) await closePane($, mux, pane)
+    return false
+  }
+  run.mux = mux
+  run.pane = pane
+  const id = pane
+  void (async () => {
+    let misses = 0
+    let last: string | undefined
+    for (;;) {
+      if ((await Promise.race([$.clock.sleep(POLL_MS).then(() => 'poll' as const), stopped])) === 'stop') {
+        finish($, run, 'stopped', null)
+        return
+      }
+      const shown = await $.process.run(d.read(id, MAX_LINES), { timeoutMs: MUX_MS }).catch(() => undefined)
+      if (!shown || shown.exitCode !== 0) {
+        // Closed by the person (or the multiplexer is gone): a few misses in a row, not one slow answer.
+        if (++misses < GONE_POLLS) continue
+        run.log.push(`\n(the ${mux} pane was closed)\n`)
+        finish($, run, 'stopped', null)
+        return
+      }
+      misses = 0
+      const { text, code } = readPane(shown.stdout)
+      if (text !== last) {
+        last = text
+        run.log.clear()
+        run.log.push(text)
+        redraw($)
+      }
+      if (code !== undefined) {
+        finish($, run, 'exited', code)
+        return
+      }
+    }
+  })()
+  return true
+}
+
 async function start($: EngineInterface, cmd: string): Promise<Run> {
   isFollowing = true
   const run: Run = { id: ++seq, cmd, cwd: await $.session.cwd(), status: 'running', code: null, log: new RunLog() }
@@ -198,6 +304,8 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
   const stopped = new Promise<'stop'>(resolve => {
     run.release = () => resolve('stop')
   })
+  const mux = await findMux($)
+  if (mux && (await startInPane($, run, mux, stopped))) return run
   void (async () => {
     const stream = $.process.spawn({ argv: ['sh', '-c', WRAPPER, 'sh', cmd], cwd: run.cwd })
     const it = stream[Symbol.asyncIterator]()
@@ -235,10 +343,18 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
   return run
 }
 
-// A new window with a shell in the session's folder: iTerm where it is installed, else Terminal.app.
-// macOS only. Whatever goes wrong comes back as one line of words, never as a throw.
+// A shell in the session's folder: a pane beside Claude Code when it runs in herdr or tmux; else a new
+// window, in iTerm where it is installed and in Terminal.app if not (macOS only). Whatever goes wrong
+// comes back as one line of words, never as a throw.
 async function openShell($: EngineInterface): Promise<string> {
   try {
+    const mux = await findMux($)
+    if (mux) {
+      const folder = await $.session.cwd()
+      const made = await $.process.run(driver(mux).split({ direction: 'right', cwd: folder, focus: true }), { cwd: folder, timeoutMs: MUX_MS })
+      if (made.exitCode === 0) return `Opened a shell pane in ${mux}: ${folder}`
+      return `Could not open a pane in ${mux}: ${oneLine(made.stderr || made.stdout) || `it exited with ${made.exitCode}`}`
+    }
     const system = await $.process.run(['uname', '-s'], { timeoutMs: 3_000 }).catch(() => undefined)
     if (system?.stdout.trim() !== 'Darwin') return NOT_MACOS
     const folder = await $.session.cwd()
@@ -289,7 +405,7 @@ export const register: Register = on => {
     })
     await $.command.register({
       name: 'shell',
-      description: 'Open a terminal window with a shell in this folder (macOS)',
+      description: 'Open a shell in this folder: a pane in herdr or tmux, else a terminal window (macOS)',
       immediate: true,
     })
     await $.tool.register({
@@ -379,6 +495,7 @@ export const register: Register = on => {
             label="Restart"
             onPress={() => {
               runs.splice(runs.indexOf(picked), 1)
+              dismiss($, picked)
               void start($, picked.cmd)
             }}
           />
@@ -399,13 +516,14 @@ export const register: Register = on => {
             label="Remove"
             onPress={() => {
               runs.splice(runs.indexOf(picked), 1)
+              dismiss($, picked)
               redraw($)
             }}
           />
         )}
         <Button key={`top${at}`} label="Top" onPress={() => void $.ui.scroll({ in: PANE, to: 'start' })} />
         <Button key={`end${at}`} label="End" onPress={() => void $.ui.scroll({ in: PANE, to: 'end' })} />
-        <Button key={`shell${at}`} label="Shell window" onPress={() => void openShell($).then(text => $.ui.toast(text))} />
+        <Button key={`shell${at}`} label="Shell" onPress={() => void openShell($).then(text => $.ui.toast(text))} />
         <Button key={`close${at}`} label="Close pane" onPress={() => void $.ui.close({ id: PANE })} />
       </Box>
     )
