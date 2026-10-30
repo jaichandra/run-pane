@@ -265,7 +265,7 @@ async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean
   const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true, columns: DOCK_COLUMNS })
   showStatus($)
   // Docked beside the transcript only in the fullscreen layout; otherwise it sits above the prompt.
-  const hint = placed.isPlaced && !isFullscreen ? ' Open Claude Code fullscreen to dock it beside the chat.' : ''
+  const hint = placed.isPlaced && !isFullscreen ? ' To dock it on the right, restart with CLAUDE_CODE_NO_FLICKER=1 claude.' : ''
   if (cmd === '') return placed.isPlaced ? `Run pane opened.${hint}` : 'The Run pane needs a wider terminal (about 110 columns) or the fullscreen layout.'
   const run = await start($, cmd)
   return `Started #${run.id}: ${cmd}${placed.isPlaced ? hint : ' (the Run pane needs a wider terminal to show it)'}`

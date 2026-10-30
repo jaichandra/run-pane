@@ -51,7 +51,8 @@ Answer `y` to add the marketplace, then pick a scope (the first, user scope, kee
 
 ### Requirements
 
-- Works in the terminal (CLI) session, which is where it is known to work. To get the pane on the right of the chat, run Claude Code in its fullscreen layout; otherwise it sits above the prompt (and `/rp` says so). The pane docks beside the transcript in the fullscreen layout, or needs a terminal about 110 columns wide; `/rp` tells you when it cannot place the pane.
+- Works in the terminal (CLI) session, which is where it is known to work. The pane docks on the right of the chat in Claude Code's fullscreen layout, from about 110 columns wide; otherwise it sits above the prompt. `/rp` tells you when it cannot place the pane.
+- **Pane below the chat instead of on the right?** Fullscreen is off by default in some terminals (for example a plain Debian terminal, or one inside tmux). Start Claude Code with `CLAUDE_CODE_NO_FLICKER=1 claude`, or make it permanent with `export CLAUDE_CODE_NO_FLICKER=1` in your shell profile. `/rp` shows this hint whenever the pane is inline.
 - `/rp` runs commands through `sh`, `ps` and `kill`: macOS and Linux, not Windows.
 - `/shell` is macOS only.
 

@@ -78,7 +78,7 @@ test('/rp starts a command and the pane lists it with its output and a Stop', as
   await ui.unmount()
 })
 
-test('/rp asks for a 60 column dock and says to go fullscreen when the pane is inline', async ($, on) => {
+test('/rp asks for a 60 column dock and says how to go fullscreen when the pane is inline', async ($, on) => {
   const process = { calls: [] as string[][], lines: [] }
   engine(on, process)
   openedColumns.length = 0
@@ -87,8 +87,8 @@ test('/rp asks for a 60 column dock and says to go fullscreen when the pane is i
   expect(openedColumns).toEqual([])
   const opened = await gt($, '')
   expect(openedColumns).toEqual([60])
-  expect(opened.text).toContain('Open Claude Code fullscreen to dock it beside the chat.')
-  expect((await gt($, 'npm run dev')).text).toContain('Open Claude Code fullscreen')
+  expect(opened.text).toContain('CLAUDE_CODE_NO_FLICKER=1 claude')
+  expect((await gt($, 'npm run dev')).text).toContain('CLAUDE_CODE_NO_FLICKER=1')
 })
 
 test('a prompt starting with > is left alone, for the model to read', async ($, on) => {

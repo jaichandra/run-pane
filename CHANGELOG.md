@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- The `/rp` hint for an inline pane now names the fix: start Claude Code with `CLAUDE_CODE_NO_FLICKER=1 claude` to dock the pane on the right.
+- README: a note on why the pane may sit below the chat (fullscreen is off by default in some terminals) and how to turn it on.
+
 ## 0.2.1
 
 - The pane asks for a 60 column dock when it sits beside a fullscreen transcript (the engine caps it at 45% of the terminal).
