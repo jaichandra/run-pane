@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.5
+
+- The limited-view notice now says the buttons need Claude Code's flicker-free display mode, offers `/tui fullscreen` (switches in the session and saves the choice) next to `CLAUDE_CODE_NO_FLICKER=1 claude`, and links to https://code.claude.com/docs/en/fullscreen.
+- README: the same, with the link.
+
 ## 0.2.4
 
 - The notice for a pane above the prompt now says what is wrong: it is a limited view whose buttons may not respond, and the full pane (on the right, buttons working) needs the flicker-free display mode, `CLAUDE_CODE_NO_FLICKER=1 claude` (not a maximised window).

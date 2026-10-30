@@ -255,9 +255,10 @@ async function openShell($: EngineInterface): Promise<string> {
 // Columns the pane asks for while docked beside a fullscreen transcript (the engine caps it at 45%).
 const DOCK_COLUMNS = 60
 
-// Said when the pane sits above the prompt (the main-screen layout): it is a limited view there, and
-// the fullscreen layout is the one that docks it on the right with working buttons.
-const DOCK_HINT = 'Limited view: the buttons may not respond here. For the full pane on the right, restart with CLAUDE_CODE_NO_FLICKER=1 claude.'
+// Said when the pane sits above the prompt (the classic renderer): the buttons need the mouse support
+// of the flicker-free display mode, which is also the one that docks the pane on the right.
+const DOCS_URL = 'https://code.claude.com/docs/en/fullscreen'
+const DOCK_HINT = `Limited view: the buttons need Claude Code's flicker-free display mode. Run /tui fullscreen (it saves the choice), or start with CLAUDE_CODE_NO_FLICKER=1 claude. Details: ${DOCS_URL}`
 
 // What `/rp` does: open the pane, and start the command if there is one.
 async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean): Promise<string> {
