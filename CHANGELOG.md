@@ -4,7 +4,7 @@
 
 First release as a repository of its own: the mod, taken out of the project it grew in.
 
-- `/dev` opens the Run pane; `/dev <command>` runs a command in it; `/dev close` closes it.
+- `>` at the start of a prompt opens the Run pane; `> <command>` runs a command in it; `> close` closes it. Typing `>` into an empty prompt adds a space after it.
 - The pane lists runs with their status and the last 2,000 lines of each one's output, coloured with the theme, and follows the bottom while it is scrolled there.
 - Suggestions from `package.json` scripts, `Cargo.toml` and `Makefile` targets.
 - Stop sends Ctrl+C to the whole process tree, then SIGTERM, then SIGKILL; Force kill skips the waiting. Restart, Clear, Remove, Top and End as well.
