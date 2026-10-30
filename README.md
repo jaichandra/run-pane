@@ -1,10 +1,35 @@
-# run-pane
+<p align="center">
+  <img src=".claude-plugin/icon.png" alt="run-pane icon" width="96" height="96">
+</p>
 
-A Run pane for Claude Code. Start a dev server, a test watcher or any other command from a pane beside the chat, watch its output while you keep talking to Claude, stop it cleanly when you are done, and let Claude read what it printed.
+<h1 align="center">run-pane</h1>
 
-- **`/rp`**: `/rp npm run dev` runs a command in the pane, a lone `/rp` opens it, `/rp close` closes it (runs keep going). It is a slash command, so it never reaches Claude and the prompt box clears by itself.
-- **`/shell`** opens a terminal window with a shell in the session's folder (macOS).
-- **`run_output`** is a tool Claude can call to read the latest output of a run, so "why did the server crash?" can be answered from what is on your screen.
+<p align="center">
+  Run dev servers, test watchers and other commands in a pane beside your Claude Code chat,<br>
+  and let Claude read what they print.
+</p>
+
+## What you get
+
+- **A Run pane.** Start a command, watch its output live while you keep chatting, and stop it cleanly when you are done.
+- **Claude can see the output.** Ask "why did the server crash?" and Claude reads what is on your screen.
+- **One-click suggestions.** The pane offers the scripts it finds in your project (`npm run dev`, `cargo test`, `make build`, ...).
+- **A shell on demand.** `/shell` opens a terminal window in the session's folder (macOS).
+
+## Quick start
+
+1. Install it (see [Install](#install)).
+2. Type `/rp npm run dev` (or any command) at the prompt.
+3. Watch it run in the pane. Press **Stop (Ctrl+C)** when you are finished.
+
+| Command | What it does |
+| --- | --- |
+| `/rp <command>` | Runs the command in the pane. |
+| `/rp` | Opens the pane. |
+| `/rp close` | Closes the pane. Runs keep going. |
+| `/shell` | Opens a terminal window in the session's folder (macOS). |
+
+`/rp` is a slash command, so it never reaches Claude and the prompt box clears by itself.
 
 ## Install
 
@@ -14,19 +39,21 @@ At the prompt of a terminal session:
 /plugin install run-pane --marketplace jaichandra/run-pane
 ```
 
-From a shell:
+Or from a shell:
 
 ```
 claude plugin install run-pane --marketplace jaichandra/run-pane
 ```
 
-Answer `y` to add the marketplace, then pick a scope (the user scope is the first). The mod is active in that session at once, and under the user scope in each session you start after it.
+Answer `y` to add the marketplace, then pick a scope (the first, user scope, keeps it on in every session). It is active in the current session at once.
 
-In the desktop app, where `/plugin` does not run: click + next to the prompt box, then Plugins, Add marketplace with `jaichandra/run-pane`, then Add plugin.
+**Desktop app** (where `/plugin` does not run): click **+** next to the prompt box, then **Plugins**, **Add marketplace** with `jaichandra/run-pane`, then **Add plugin**.
 
-The mod has been used in the terminal (CLI) session, so that is where it is known to work. There the pane docks beside the transcript in the fullscreen layout, or needs a terminal about 110 columns wide; `/rp` says so when it cannot place the pane.
+### Requirements
 
-`/rp` runs commands through `sh`, `ps` and `kill`, so it works on macOS and Linux and not on Windows. `/shell` is macOS only.
+- Works in the terminal (CLI) session, which is where it is known to work. The pane docks beside the transcript in the fullscreen layout, or needs a terminal about 110 columns wide; `/rp` tells you when it cannot place the pane.
+- `/rp` runs commands through `sh`, `ps` and `kill`: macOS and Linux, not Windows.
+- `/shell` is macOS only.
 
 ## Using it
 
