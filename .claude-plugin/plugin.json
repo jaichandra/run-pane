@@ -1,7 +1,7 @@
 {
   "name": "run-pane",
-  "version": "0.2.5",
-  "description": "A Run pane for Claude Code: start, watch and stop dev servers, test runs and other commands in a pane beside the chat, let Claude read their output, and open a shell in the same folder",
+  "version": "0.3.0",
+  "description": "A Run pane for Claude Code: start, watch and stop dev servers, test runs and other commands in a pane beside the chat, let Claude read their output, and open a shell in the same folder (in herdr and tmux, commands and shells run in panes beside the chat)",
   "author": {
     "name": "jaichandra"
   },
