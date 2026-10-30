@@ -95,7 +95,7 @@ function redraw($: EngineInterface): void {
 
 function showStatus($: EngineInterface): void {
   const running = runs.filter(run => run.status === 'running').length
-  $.ui.status(running > 0 ? `▶ ${running} running · /dev · /shell` : '▶ /dev · /shell')
+  $.ui.status(running > 0 ? `▶ ${running} running · /dev · > · /shell` : '▶ /dev · > · /shell')
 }
 
 // hooks/run-pane.json is optional and meant for whoever bundles the mod: `suggestions` (commands to
@@ -252,6 +252,20 @@ async function openShell($: EngineInterface): Promise<string> {
   }
 }
 
+// What /dev and a `>` prompt do: open the pane, and start the command if there is one.
+async function dev($: EngineInterface, args: string): Promise<string> {
+  const cmd = args.trim()
+  if (cmd === 'close') {
+    await $.ui.close({ id: PANE })
+    return 'Run pane closed. Commands keep running; /dev shows them again.'
+  }
+  const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true })
+  showStatus($)
+  if (cmd === '') return placed.isPlaced ? 'Run pane opened.' : 'The Run pane needs a wider terminal (about 110 columns) or the fullscreen layout.'
+  const run = await start($, cmd)
+  return `Started #${run.id}: ${cmd}${placed.isPlaced ? '' : ' (the Run pane needs a wider terminal to show it)'}`
+}
+
 const open = (id: number): Run | undefined => runs.find(run => run.id === id)
 
 export const register: Register = on => {
@@ -285,17 +299,13 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'dev' }, async ($, e) => {
-    const cmd = e.args.trim()
-    if (cmd === 'close') {
-      await $.ui.close({ id: PANE })
-      return { text: 'Run pane closed. Commands keep running; /dev shows them again.' }
-    }
-    const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true })
-    showStatus($)
-    if (cmd === '') return { text: placed.isPlaced ? 'Run pane opened.' : 'The Run pane needs a wider terminal (about 110 columns) or the fullscreen layout.' }
-    const run = await start($, cmd)
-    return { text: `Started #${run.id}: ${cmd}${placed.isPlaced ? '' : ' (the Run pane needs a wider terminal to show it)'}` }
+  on('command.run', { command: 'dev' }, async ($, e) => ({ text: await dev($, e.args) }))
+
+  // A prompt that starts with `>` is the same as /dev: `> npm run dev` runs it, a lone `>` opens the pane.
+  // Only the person's own typing counts, and a slash command's line is left alone.
+  on('prompt.submit', async ($, e, next) => {
+    if (e.command || e.isMeta || e.origin.kind !== 'composer' || !e.text.startsWith('>')) return next(e)
+    return { drop: await dev($, e.text.slice(1)) }
   })
 
   on('command.run', { command: 'shell' }, async $ => ({ text: await openShell($) }))
@@ -415,7 +425,7 @@ export const register: Register = on => {
             onSubmit={go}
           />
         ) : (
-          <Text dimColor>Type /dev &lt;command&gt; to start one.</Text>
+          <Text dimColor>Type &gt; &lt;command&gt; (or /dev &lt;command&gt;) to start one.</Text>
         )}
         {hints.length > 0 && (
           <Box flexDirection="column">
