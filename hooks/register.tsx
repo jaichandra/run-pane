@@ -4,7 +4,6 @@ import type { EngineInterface, Register } from 'claude-code'
 import {
   descendants,
   highlight,
-  isAtBottom,
   matchesAny,
   MAX_LINES,
   readPid,
@@ -23,7 +22,6 @@ import type { TerminalApp } from './shell'
 const PANE = 'run'
 const TOOL = 'mcp__run-pane__run_output'
 const REDRAW_MS = 120
-const FOLLOW_MS = 40
 const KEEP_RUNS = 12
 const POLL_MS = 500
 // How long a run gets to wind itself down after Ctrl+C (a stack tearing down its containers: 30 s),
@@ -77,16 +75,11 @@ const opened = new Map<string, Mux>()
 const hints = new Map<string, string[]>()
 let seq = 0
 let isRedrawQueued = false
-// Whether the pane is scrolled to its bottom: then new output keeps it there. Scrolling up (the
-// person's wheel or keys) ends that; scrolling back down to the bottom, or End, brings it back.
-let isFollowing = true
-
-// After a draw that grew the output: back to the bottom, if that is where the pane was.
-async function follow($: EngineInterface): Promise<void> {
-  if (!isFollowing) return
-  await $.clock.sleep(FOLLOW_MS)
-  if (isFollowing) await $.ui.scroll({ in: PANE, to: 'end' })
-}
+// How many lines the output is scrolled back from its newest: 0 follows new output. The output is
+// the pane's one scrolling part, windowed here, so the pane itself never scrolls and the buttons
+// stay on its last row without being moved by a scroll.
+let back = 0
+let newest = 0
 
 function redraw($: EngineInterface): void {
   if (isRedrawQueued) return
@@ -95,7 +88,7 @@ function redraw($: EngineInterface): void {
     .sleep(REDRAW_MS)
     .then(() => {
       isRedrawQueued = false
-      return update($, rev, n => n + 1).then(() => follow($))
+      return update($, rev, n => n + 1)
     })
     .catch(() => {
       isRedrawQueued = false
@@ -352,7 +345,7 @@ async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Prom
 }
 
 async function start($: EngineInterface, cmd: string): Promise<Run> {
-  isFollowing = true
+  back = 0
   const run: Run = { id: ++seq, cmd, cwd: await $.session.cwd(), status: 'running', code: null, log: new RunLog() }
   runs.push(run)
   const done = runs.filter(one => one.status !== 'running')
@@ -511,11 +504,12 @@ export const register: Register = on => {
     }
   })
 
-  // Every move of the pane's window, the person's or this mod's own, says whether it ends at the
-  // bottom.
-  on('ui.scroll', { requestId: PANE }, (_$, e, next) => {
-    isFollowing = isAtBottom(e)
-    return next(e)
+  // The person's wheel or keys scroll the output, not the pane: the move is answered here, the
+  // pane's own window stays where it is.
+  on('ui.scroll', { requestId: PANE }, ($, e) => {
+    back = Math.min(Math.max(0, back - e.by), newest)
+    $.ui.invalidate('ui.render')
+    return {}
   }).catch((_$, e, next) => next(e))
 
   // A /clear ends the conversation but not the process, and no `session.start` follows, so the runs
@@ -553,10 +547,21 @@ export const register: Register = on => {
     // The pane scrolls as a whole (wheel, or the keys while it has the focus), so the output is
     // drawn in full and everything above it scrolls away with the top of it. The buttons are one
     // row at the very end, so they stay in view while the pane follows the output.
-    const output = picked?.log.tail(MAX_LINES) ?? []
+    const rows = Math.max(1, e.props.scroll.bodyRows)
+    // The rows the output box has: the pane less what is drawn around it, counted high where it
+    // wraps (the hint, the buttons), so scrolling stops with the first line at the top, not past it.
+    const chrome =
+      1 + (e.props.placement === 'inline' ? 4 : 0) + 1 + (hints.length > 0 ? hints.length + 1 : 0) + 1 + Math.max(1, runs.length) + 3 + (e.props.bodyColumns < 80 ? 2 : 1)
+    const visible = Math.max(1, rows - chrome)
+    newest = Math.max(0, (picked?.log.size ?? 0) - visible)
+    back = Math.min(back, newest)
+    // The lines ending `back` before the newest, newest first: drawn from the bottom up, so what
+    // does not fit is cut at the top.
+    const all = picked?.log.tail(MAX_LINES) ?? []
+    const output = all.slice(Math.max(0, all.length - back - rows), all.length - back).reverse()
 
     const toolbar = (): JSX.Element => (
-      <Box flexWrap="wrap" columnGap={1}>
+      <Box flexWrap="wrap" columnGap={1} flexShrink={0}>
         {picked?.status === 'running' && (
           <Button
             key={`${picked.isStopping ? 'force' : 'stop'}:${picked.id}`}
@@ -598,14 +603,23 @@ export const register: Register = on => {
             }}
           />
         )}
-        <Button key={`end`} label="End" onPress={() => void $.ui.scroll({ in: PANE, to: 'end' })} />
+        <Button
+          key={`end`}
+          label="End"
+          onPress={() => {
+            back = 0
+            $.ui.invalidate('ui.render')
+          }}
+        />
         <Button key={`shell`} label="Shell" onPress={() => void openShell($).then(text => $.ui.toast(text))} />
         <Button key={`close`} label="Close pane" onPress={() => void $.ui.close({ id: PANE })} />
       </Box>
     )
 
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" height={rows}>
+        {/* Above the output, none of it shrinks: when the output is long, it alone gives way. */}
+        <Box flexDirection="column" flexShrink={0}>
         <Text bold wrap="truncate-start">
           {folderName(cwd)}
         </Text>
@@ -647,11 +661,16 @@ export const register: Register = on => {
             <Text dimColor> {run.isStopping && run.status === 'running' ? 'stopping\u2026' : statusWords(run.status, run.code)}</Text>
           </Box>
         ))}
+        </Box>
         {picked && (
-          <Box flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={3} borderStyle="round" borderDimColor paddingX={1}>
             <Text dimColor wrap="truncate-end">
-              #{picked.id} output ({picked.log.size} lines)
+              #{picked.id} output ({picked.log.size} lines{back > 0 ? `, ${back} back` : ''})
             </Text>
+            <Box flexDirection="column-reverse" flexGrow={1} flexShrink={1} overflow="hidden">
+            {/* First, so at the bottom: it takes the room the lines leave, which keeps a short output at the top. */}
+            <Box flexGrow={1} />
+            {picked.log.size === 0 && <Text dimColor>No output yet.</Text>}
             {output.map(line => (
               <Text wrap="truncate-end">
                 {line === ''
@@ -669,7 +688,7 @@ export const register: Register = on => {
                     )}
               </Text>
             ))}
-            {picked.log.size === 0 && <Text dimColor>No output yet.</Text>}
+            </Box>
           </Box>
         )}
         {toolbar()}
