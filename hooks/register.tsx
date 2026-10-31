@@ -617,7 +617,7 @@ async function openLink($: EngineInterface, run: Run, link: { kind: 'url' | 'fil
   try {
     const tool = await openerOf($)
     if (!tool) return void $.ui.toast(`Cannot open ${link.target} on this system.`)
-    const target = link.kind === 'url' ? link.target : resolveFile(run.cwd, link.target, await envOf($.env.get('HOME')))
+    const target = link.kind === 'url' ? link.target : resolveFile(run.cwd, link.target, await home$($))
     const ran = await $.process.run([tool, target], { timeoutMs: 10_000 })
     if (ran.exitCode !== 0) $.ui.toast(`Could not open ${link.target}: ${oneLine(ran.stderr || ran.stdout) || `${tool} exited with ${ran.exitCode}`}`)
   } catch (error) {
@@ -625,14 +625,42 @@ async function openLink($: EngineInterface, run: Run, link: { kind: 'url' | 'fil
   }
 }
 
-// Looks up the paths in some lines of output that are files, so they can be links.
-async function lookUp($: EngineInterface, run: Run, texts: readonly string[]): Promise<void> {
-  const home = await envOf($.env.get('HOME'))
-  const wanted = new Set<string>()
-  for (const text of texts) for (const path of candidatePaths(text)) wanted.add(resolveFile(run.cwd, path, home))
-  await Promise.all(
-    [...wanted].filter(path => !known.has(path)).map(async path => known.set(path, await $.fs.exists(path).catch(() => false))),
-  )
+// The home folder, read once: `~/` in a path is resolved from it.
+let homeOf: Promise<string | undefined> | undefined
+const home$ = ($: EngineInterface): Promise<string | undefined> => (homeOf ??= envOf($.env.get('HOME')))
+
+// Paths being looked up, and how many a pass takes (docker prints a path-like name on most lines).
+const looking = new Set<string>()
+const MAX_LOOKUPS = 40
+
+// Finds out, in the background, which of the paths in some lines of output are files, and redraws when one is. A
+// render never waits on the file system: it draws as links the paths already known to be files, and the next one
+// has the rest. Each path is asked once, and what is not a file is remembered too.
+function lookUp($: EngineInterface, run: Run, texts: readonly string[]): void {
+  void (async () => {
+    const home = await home$($)
+    const wanted = new Set<string>()
+    for (const text of texts) {
+      for (const path of candidatePaths(text)) {
+        const resolved = resolveFile(run.cwd, path, home)
+        if (!known.has(resolved) && !looking.has(resolved)) wanted.add(resolved)
+      }
+      if (wanted.size >= MAX_LOOKUPS) break
+    }
+    const paths = [...wanted].slice(0, MAX_LOOKUPS)
+    if (paths.length === 0) return
+    for (const path of paths) looking.add(path)
+    let isFound = false
+    await Promise.all(
+      paths.map(async path => {
+        const exists = await $.fs.exists(path).catch(() => false)
+        known.set(path, exists)
+        looking.delete(path)
+        if (exists) isFound = true
+      }),
+    )
+    if (isFound) redraw($)
+  })().catch(() => undefined)
 }
 
 // What a part of a line is drawn with: the colours and styles it carries, or its theme colours.
@@ -769,7 +797,7 @@ export const register: Register = on => {
     // The rows the output box has: the pane less what is drawn around it, counted high where it
     // wraps (the hint, the buttons), so scrolling stops with the first line at the top, not past it.
     // The suggestions are chips that wrap: about as many rows as their width fills.
-    const hintRows = hints.length > 0 ? Math.max(1, Math.ceil((4 + hints.reduce((sum, cmd) => sum + cmd.length + 3, 0)) / Math.max(20, e.props.bodyColumns - 2))) : 0
+    const hintRows = hints.length > 0 ? 2 * Math.max(1, Math.ceil((4 + hints.reduce((sum, cmd) => sum + cmd.length + 3, 0)) / Math.max(20, e.props.bodyColumns - 2))) - 1 : 0
     const chrome =
       1 + (e.props.placement === 'inline' ? 4 : 0) + 1 + hintRows + Math.max(1, runs.length) + 3 + (e.props.bodyColumns < 80 ? 2 : 1)
     const visible = Math.max(1, rows - chrome)
@@ -780,9 +808,9 @@ export const register: Register = on => {
     const all = picked?.log.styled(MAX_LINES) ?? []
     const firstShown = Math.max(0, all.length - back - rows)
     const shown = all.slice(firstShown, all.length - back)
-    // Which of the paths in the lines on show are files: looked up before the lines are drawn, once for each.
-    if (picked) await lookUp($, picked, shown.map(line => stripAnsi(line.text)))
-    const homeDir = await envOf($.env.get('HOME'))
+    // Which of the paths in the lines on show are files: looked up in the background, once for each.
+    if (picked) lookUp($, picked, shown.map(line => stripAnsi(line.text)))
+    const homeDir = await home$($)
     const isFile = (path: string): boolean => picked !== undefined && known.get(resolveFile(picked.cwd, path, homeDir)) === true
     const output = shown.map((line, at) => ({ line, at: (picked?.log.first ?? 0) + firstShown + at })).reverse()
 
@@ -908,7 +936,7 @@ export const register: Register = on => {
           <Text dimColor>Type &gt; &lt;command&gt; to start one.</Text>
         )}
         {hints.length > 0 && (
-          <Box flexWrap="wrap" columnGap={1}>
+          <Box flexWrap="wrap" columnGap={1} rowGap={1}>
             <Text dimColor>Try</Text>
             {hints.map(cmd => (
               <Button plain key={`hint:${cmd}`} label={cmd} onPress={() => go(cmd)}>

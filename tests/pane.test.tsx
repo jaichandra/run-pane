@@ -26,7 +26,7 @@ const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) =>
 // Stands for the engine beneath the mod: the calls the mod makes are answered here.
 function engine(
   on: On,
-  process: { calls: string[][]; lines: string[]; remote?: string; opened?: string[]; toasts?: string[]; spawns?: { argv: readonly string[]; env?: Record<string, string> | undefined }[]; existing?: string[] },
+  process: { calls: string[][]; lines: string[]; remote?: string; opened?: string[]; toasts?: string[]; isFsHung?: boolean; spawns?: { argv: readonly string[]; env?: Record<string, string> | undefined }[]; existing?: string[] },
   files: Record<string, string> = { 'package.json': '{"scripts":{"dev":"vite","test":"vitest"}}' },
 ) {
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -62,7 +62,11 @@ function engine(
     if (e.argv[0] === 'ps') return { value: { exitCode: 0, stdout: ' 4242 1\n 4243 4242\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('fs.exists', (_, e) => ({ value: process.existing?.includes(e.path) === true }))
+  on('fs.exists', async (_, e) => {
+    // A file system that never answers: a render must not wait for it.
+    if (process.isFsHung) await new Promise<void>(() => undefined)
+    return { value: process.existing?.includes(e.path) === true }
+  })
   on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/Users/me' : undefined }))
   on('process.spawn', async function* (_, e) {
     process.spawns?.push({ argv: e.argv, env: e.env })
@@ -374,10 +378,16 @@ test('a file in the output that exists is a press that opens it, one that does n
     lines: ['src/app.ts:12:5 - error TS1\n', 'see ~/notes/a.md\n', 'src/gone.ts:1 and a/b\n'],
   }
   engine(on, process)
+  // The redraw after the lookup waits its debounce on the clock: a short real one.
+  on('clock.sleep', async () => {
+    await new Promise<void>(resolve => setTimeout(resolve, 1))
+    return { value: undefined }
+  })
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'tsc')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // The paths are looked up after the first drawing, which the lookup then draws again: `find` waits for it.
   expect(await ui.find({ key: 'link:1:0:0' })).toBeDefined()
   expect(await ui.find({ key: 'link:1:1:1' })).toBeDefined()
   // Neither the missing file nor the word with a slash is a link.
@@ -444,5 +454,37 @@ test('Open in shell on a process of the plugin, with no tmux, opens a shell in i
   await new Promise<void>(resolve => setTimeout(resolve, 30))
   expect(process.calls.some(argv => argv[0] === 'osascript')).toBe(true)
   expect(process.toasts.some(text => text.endsWith('Type: npm run dev'))).toBe(true)
+  await ui.unmount()
+})
+
+test('a file system that does not answer does not hold up the drawing of the output', async ($, on) => {
+  const process = {
+    calls: [] as string[][],
+    isFsHung: true,
+    lines: ['pulling docker.io/library/nginx:latest\n', 'src/app.ts:1 done\n', 'all of it printed\n'],
+  }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'docker compose up')
+  await untilPrinted($, 'all of it printed')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // Every line is on the screen, and the unanswered paths are plain text, not links.
+  expect(await ui.find({ type: 'Text', text: /all of it printed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /pulling docker.io\/library\/nginx:latest/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /src\/app.ts:1 done/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a pane that has a lot of output draws it, whatever the lines say', async ($, on) => {
+  const lines = Array.from({ length: 300 }, (_, at) => `layer ${at} sha256:abc${at} docker.io/library/img${at}/x ./f${at}/g https://x.dev/${at}\n`)
+  const process = { calls: [] as string[][], lines: [...lines, 'the very last line\n'] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'sandbox start ci')
+  await untilPrinted($, 'the very last line')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /the very last line/ })).toBeDefined()
   await ui.unmount()
 })

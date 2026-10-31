@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Drawing the output no longer waits on the file system. Which of the paths in the output are files (to be links) is found in the background, once for each path and at most 40 at a time, and the pane is drawn again when one is; before, each drawing asked for every new path-like word first (docker prints one on most lines), which could hold the output back. A file system that does not answer now only means no file links.
+- A vertical gap between the suggestion chips, so rows of them do not run together.
 - **Buttons have a background** (their label on a theme colour with a space each side: red for Stop, the accent colour for Restart, Attach and Open in shell, grey for the rest), so they read as controls; Attach has a space before it in the run row (`vi package.json running [ Attach ]`). The End button is gone: scrolling down to the last line follows the output again.
 - **Shell is now Open in shell**, and it opens the selected run. In a hidden terminal it is the Attach. For a process of the plugin, which has no terminal to attach to, it opens a window on a new hidden shell in the run's folder with its command typed at the prompt and not run (a second copy of a dev server could clash with the first); with no tmux, a plain shell window and the line to type. In a pane beside Claude Code it says so. With no run selected it is `/shell`, as before.
 - **Suggestions are chips in one wrapping row** after a dim `Try`, not a line each: ten of them take one or two rows instead of eleven, and the output gets the rest.
