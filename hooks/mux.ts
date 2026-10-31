@@ -2,24 +2,50 @@
 // in, the commands that split a pane, type into it, read it back and close it, and how what a pane
 // shows is told from the command that was typed into it.
 
-// `hidden`: no multiplexer of the person's, so a tmux server of the mod's own (its own socket, never shown)
-// holds the terminals, and the Run pane is where they are followed.
-export type Mux = 'herdr' | 'tmux' | 'hidden'
+// `iterm`: iTerm2, which splits its own panes (AppleScript) with no multiplexer in it. `hidden`: nothing of the
+// person's can split, so a tmux server of the mod's own (its own socket, never shown) holds the terminals, and
+// the Run pane is where they are followed.
+export type Mux = 'herdr' | 'tmux' | 'iterm' | 'hidden'
 
 /** The variables that tell which multiplexer a session runs in. */
-export type MuxEnv = { herdrEnv?: string | undefined; herdrPane?: string | undefined; tmux?: string | undefined; tmuxPane?: string | undefined }
+export type MuxEnv = {
+  herdrEnv?: string | undefined
+  herdrPane?: string | undefined
+  tmux?: string | undefined
+  tmuxPane?: string | undefined
+  termProgram?: string | undefined
+  itermSession?: string | undefined
+}
+
+const UUID = /^[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$/
+
+/** The id of the iTerm2 pane a session runs in: `ITERM_SESSION_ID` is `w0t0p0:<uuid>`, and the uuid is what iTerm's
+ * AppleScript calls the session's `unique id`. */
+export function itermSessionId(value: string | undefined): string | undefined {
+  const id = value?.split(':')[1]
+  return id !== undefined && UUID.test(id) ? id : undefined
+}
 
 /** herdr first: it is the one that is made for agents, and `HERDR_ENV=1` is what its own skill checks.
  * Run inside tmux, tmux's variables are inherited too, so they cannot tell the inner one. */
 export function detectMux(env: MuxEnv): Mux | undefined {
   if (env.herdrEnv === '1' && env.herdrPane) return 'herdr'
   if (env.tmux && env.tmuxPane) return 'tmux'
+  // Last: a tmux inside iTerm is the tmux's pane to split, and it sets its own variables.
+  if (env.termProgram === 'iTerm.app' && itermSessionId(env.itermSession)) return 'iterm'
   return undefined
 }
 
 export type Direction = 'right' | 'down'
 
-export type SplitOptions = { target?: string | undefined; direction: Direction; cwd: string; focus: boolean }
+export type SplitOptions = {
+  target?: string | undefined
+  direction: Direction
+  cwd: string
+  focus: boolean
+  /** The pane Claude Code runs in, for a multiplexer that cannot tell it (iTerm2's current pane may be another one). */
+  home?: string | undefined
+}
 
 /** The commands of one multiplexer. Each is an argument vector (never a shell string), and the pane
  * to act on is the id `split` made. */
@@ -147,11 +173,104 @@ function tmuxDriver(socket: readonly string[], split: MuxDriver['split']): MuxDr
 const tmux = tmuxDriver([], visibleSplit)
 const hidden = tmuxDriver(['-L', HIDDEN_SOCKET], hiddenSplit)
 
-export const driver = (mux: Mux): MuxDriver => (mux === 'herdr' ? herdr : mux === 'hidden' ? hidden : tmux)
+// iTerm2 is driven by AppleScript. Every script is fixed text: the pane, the line and the folder are the
+// script's `argv`, never part of it. The pane is the session's `unique id`.
+const FIND_SESSION = `on findSession(sid)
+  tell application "iTerm"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if unique id of s is sid then return s
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  error "no iTerm pane " & sid
+end findSession
+`
+
+// A split to the right is a vertical divider, one below a horizontal one. The new pane starts in the home
+// folder, so it is sent to the folder first. Splitting moves the focus to the new pane: given back unless asked.
+const ITERM_SPLIT = `${FIND_SESSION}on run argv
+  set sid to item 1 of argv
+  set side to item 2 of argv
+  set dir to item 3 of argv
+  set mode to item 4 of argv
+  tell application "iTerm"
+    set src to my findSession(sid)
+    tell src
+      if side is "right" then
+        set made to (split vertically with default profile)
+      else
+        set made to (split horizontally with default profile)
+      end if
+    end tell
+    tell made to write text ("cd -- " & quoted form of dir)
+    if mode is not "focus" then select src
+    return unique id of made
+  end tell
+end run
+`
+const ITERM_TYPE = `${FIND_SESSION}on run argv
+  tell application "iTerm" to tell (my findSession(item 1 of argv)) to write text (item 2 of argv)
+end run
+`
+const ITERM_READ = `${FIND_SESSION}on run argv
+  tell application "iTerm" to tell (my findSession(item 1 of argv)) to return contents
+end run
+`
+const ITERM_TTY = `${FIND_SESSION}on run argv
+  tell application "iTerm" to tell (my findSession(item 1 of argv)) to return tty
+end run
+`
+const ITERM_INTERRUPT = `${FIND_SESSION}on run argv
+  tell application "iTerm" to tell (my findSession(item 1 of argv)) to write text (ASCII character 3) newline NO
+end run
+`
+const ITERM_CLOSE = `${FIND_SESSION}on run argv
+  tell application "iTerm" to tell (my findSession(item 1 of argv)) to close
+end run
+`
+const osascript = (script: string, ...args: string[]): string[] => ['osascript', '-e', script, '--', ...args]
+
+/** The shell of a pane and the foreground process group of its terminal, from `ps -o pid=,ppid=,tpgid=` of the
+ * terminal's processes. The first of them is `login`, whose parent is iTerm's, and the shell is its child; a
+ * profile that runs the shell itself has no `login`, and then the first is the shell. */
+function itermShell(stdout: string): { pid: number; group: number } | undefined {
+  const rows = stdout
+    .split('\n')
+    .map(line => line.trim().split(/\s+/).map(Number))
+    .filter((row): row is [number, number, number] => row.length === 3 && row.every(Number.isInteger))
+  const first = rows.find(([, parent]) => !rows.some(([pid]) => pid === parent))
+  const shell = rows.find(([, parent]) => parent === first?.[0]) ?? first
+  return shell && shell[0] > 1 ? { pid: shell[0], group: shell[2] } : undefined
+}
+
+const iterm: MuxDriver = {
+  split: ({ target, direction, cwd, focus, home }) => osascript(ITERM_SPLIT, target ?? home ?? '', direction, cwd, focus ? 'focus' : 'keep'),
+  paneId: stdout => (UUID.test(stdout.trim()) ? stdout.trim() : undefined),
+  // `write text` types the line and presses Enter.
+  type: (pane, line) => [osascript(ITERM_TYPE, pane, line)],
+  // The whole of the pane, scrollback included, with wrapped lines joined. The last `lines`, and the failure of
+  // osascript (a pane that is gone) is the exit code, not the tail's.
+  read: (pane, lines) => ['sh', '-c', 'out=$(osascript -e "$1" -- "$2") || exit 1; printf "%s\\n" "$out" | tail -n "$3"', 'sh', ITERM_READ, pane, String(lines)],
+  // The pane's terminal and the processes on it, as the pane's shell leads it or not.
+  idle: pane => ['sh', '-c', 'tty=$(osascript -e "$1" -- "$2") || exit 1; exec ps -t "${tty#/dev/}" -o pid= -o ppid= -o tpgid=', 'sh', ITERM_TTY, pane],
+  isIdle: stdout => {
+    const shell = itermShell(stdout)
+    return shell !== undefined && shell.pid === shell.group
+  },
+  shellPid: stdout => itermShell(stdout)?.pid,
+  interrupt: pane => osascript(ITERM_INTERRUPT, pane),
+  close: pane => osascript(ITERM_CLOSE, pane),
+}
+
+export const driver = (mux: Mux): MuxDriver => (mux === 'herdr' ? herdr : mux === 'iterm' ? iterm : mux === 'hidden' ? hidden : tmux)
 
 const SGR = /\u001b\[[0-9;]*m/g
 
-const screenLines = (shown: string): string[] => shown.replace(/\r/g, '').replace(SGR, '').split('\n')
+// iTerm2 ends each row with a space, and an empty row is one: the end of a line is not part of what it says.
+const screenLines = (shown: string): string[] => shown.replace(/\r/g, '').replace(SGR, '').split('\n').map(line => line.trimEnd())
 
 // A line ends with the command typed at a prompt: after a space (or alone), so output that merely ends in the
 // same letters (`ls` in `tools`) is not taken for it.

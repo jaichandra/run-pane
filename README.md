@@ -15,7 +15,7 @@
 - **Claude can see the output.** Ask "why did the server crash?" and Claude reads what is on your screen.
 - **One-click suggestions.** The pane offers the scripts it finds in your project (`npm run dev`, `cargo test`, `make build`, ...).
 - **A shell on demand.** `/shell` opens a shell in the session's folder: a terminal pane beside Claude Code in herdr or tmux, a terminal window on macOS.
-- **Runs in your multiplexer.** Started inside [herdr](https://herdr.dev) or tmux, `/rp` runs each command in a terminal pane of its own beside Claude Code, where you can click in and type to it.
+- **Runs in a terminal pane.** Started inside [herdr](https://herdr.dev), tmux or iTerm2, `/rp` runs each command in a terminal pane of its own beside Claude Code, where you can click in and type to it (`vi`, a prompt, `ssh`).
 
 ## Quick start
 
@@ -87,9 +87,11 @@ Commands run through `sh -lc` (a login shell, so `/etc/profile` and `~/.profile`
 
 The list holds 12 runs at most; the oldest finished ones drop off first. Runs still going when the session ends are stopped the same way Stop does it.
 
-### In herdr and tmux
+### In herdr, tmux and iTerm2
 
-When Claude Code runs inside [herdr](https://herdr.dev) (`HERDR_ENV=1`) or tmux (`$TMUX`), the plugin notices and uses it, with no setting. herdr is checked first.
+When Claude Code runs inside [herdr](https://herdr.dev) (`HERDR_ENV=1`), tmux (`$TMUX`) or iTerm2 (`TERM_PROGRAM=iTerm.app`), the plugin notices and uses it, with no setting. herdr is checked first, then tmux, then iTerm2 (a tmux inside iTerm2 is the tmux's to split).
+
+**iTerm2** needs no tmux: the plugin splits iTerm's own panes with AppleScript, so the first time macOS may ask whether Claude Code may control iTerm (as for `/shell`). The new pane is split from the pane Claude Code runs in, never from whichever has the focus; it is read through iTerm's screen contents (scrollback included), and the shell is told to be at its prompt by the foreground process of the pane's terminal. A command with a control character in it is not typed (it would act as a key) and goes to the hidden tmux server below. `/shell` still opens a window there.
 
 - `/rp <command>` types the command into the pane of the last run if nothing is running in it (none of this plugin's runs, no command of yours in front of the prompt, and no background job such as `while true; do ./x.sh; sleep 1; done &` behind it, since that prints into the pane; jobs are looked for with `pgrep`, and a shell with helper processes of its own, like some prompt themes, counts as busy). Otherwise, or for the first run, it splits a new terminal pane (the first on the right of Claude Code, the next ones below the last) and types it there. It then follows what the pane shows. Your focus stays where it was. The terminal pane is a real terminal: click into it to answer a prompt or use an editor. `/rp <command>` leaves the Run pane shut, since the command is already in front of you; `/rp` alone opens it, listing the runs with their output, and `run_output` returns them to Claude as before.
 - Stop types Ctrl+C into the terminal pane; if the command ignores it for 30 s, or Force kill is pressed, the pane is closed. A finished run's pane stays open, so you can read it and the next command can use it. Remove closes it unless another run's output is on it too. Restart types the command again, in the same pane if it is free. Closing a pane yourself ends its run as stopped.
@@ -97,7 +99,7 @@ When Claude Code runs inside [herdr](https://herdr.dev) (`HERDR_ENV=1`) or tmux 
 - When you leave the session (`/exit`, Ctrl+C or Ctrl+D), every pane the plugin opened, for runs and for `/shell`, is closed at once, and what runs in them ends with them (Claude Code gives an exit about a second, so they are not asked to stop first). A `/clear` keeps them.
 - If a pane cannot be made, the command runs as before, as a process of the plugin, so `/rp` never stops working because of the multiplexer.
 - The output is read back about twice a second and holds the last 2000 lines.
-- Anywhere else, if tmux is installed, the same happens in a hidden tmux server of the plugin's own (`tmux -L run-pane`, never shown): each command is typed into a window of it, and the Run pane follows that. Commands that need a terminal (`vi`, `less`, `ssh`) work there: press **Attach** on the run to open a window on the server (iTerm or Terminal on macOS; elsewhere the button tells you the line to type, `tmux -L run-pane attach -t run-pane`; Ctrl+B d leaves it). While such a command holds the screen, the Run pane shows no output for it. The server ends with the session. Without tmux, commands run as processes of the plugin, which have no terminal.
+- Anywhere else (or in iTerm2 when its pane cannot be made), if tmux is installed, the same happens in a hidden tmux server of the plugin's own (`tmux -L run-pane`, never shown): each command is typed into a window of it, and the Run pane follows that. Commands that need a terminal (`vi`, `less`, `ssh`) work there: press **Attach** on the run to open a window on the server (iTerm or Terminal on macOS; elsewhere the button tells you the line to type, `tmux -L run-pane attach -t run-pane`; Ctrl+B d leaves it). While such a command holds the screen, the Run pane shows no output for it. The server ends with the session. Without tmux, commands run as processes of the plugin, which have no terminal.
 - To turn this off, set `"multiplexer": false` in `hooks/run-pane.json` (see below).
 
 ### `/shell`

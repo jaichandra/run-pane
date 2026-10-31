@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { detectMux, driver, echoes, HIDDEN_ATTACH, isTmuxPane, readPane } from '../hooks/mux'
+import { detectMux, driver, echoes, HIDDEN_ATTACH, isTmuxPane, itermSessionId, readPane } from '../hooks/mux'
 
 test('herdr is told by HERDR_ENV=1 with a pane, tmux by TMUX with a pane, and herdr wins inside tmux', () => {
   expect(detectMux({ herdrEnv: '1', herdrPane: 'w4:p1' })).toBe('herdr')
@@ -133,4 +133,64 @@ test('a prompt of two lines goes whole once the command is over, the output abov
   // has a head the same way above the command line does lose it (the shape is all there is to go by).
   expect(readPane('$ ls\na\n\n# note\n$ ', 'ls', true)).toBe('a\n\n# note')
   expect(readPane('# first\n$ ls\na\n\n# note\n$ ', 'ls', true)).toBe('a')
+})
+
+test('iTerm2 is told by its program and a session id with a uuid, after herdr and tmux', () => {
+  const uuid = '36B98952-11FE-4BEB-AABF-EA2E02581F1A'
+  const iterm = { termProgram: 'iTerm.app', itermSession: `w0t3p0:${uuid}` }
+  expect(detectMux(iterm)).toBe('iterm')
+  expect(detectMux({ ...iterm, tmux: '/tmp/x,1,0', tmuxPane: '%0' })).toBe('tmux')
+  expect(detectMux({ ...iterm, herdrEnv: '1', herdrPane: 'w1:p0' })).toBe('herdr')
+  expect(detectMux({ ...iterm, termProgram: 'Apple_Terminal' })).toBeUndefined()
+  expect(detectMux({ termProgram: 'iTerm.app', itermSession: 'w0t0p0:not-a-uuid' })).toBeUndefined()
+  expect(detectMux({ termProgram: 'iTerm.app' })).toBeUndefined()
+  expect(itermSessionId(`w0t3p0:${uuid}`)).toBe(uuid)
+  expect(itermSessionId(undefined)).toBeUndefined()
+})
+
+test('iTerm2: every pane command is an osascript with the pane and the line as arguments of a fixed script', () => {
+  const iterm = driver('iterm')
+  const id = '0EBEFCEA-B4FA-4E75-8AD7-A4143A445073'
+  const type = iterm.type(id, "it's $(x)")[0] as string[]
+  expect(type.slice(0, 2)).toEqual(['osascript', '-e'])
+  expect(type.slice(3)).toEqual(['--', id, "it's $(x)"])
+  expect(type[2]).not.toContain('$(x)')
+  const split = iterm.split({ direction: 'down', cwd: '/w/a b', focus: true, target: id, home: 'HOME' })
+  expect(split.slice(3)).toEqual(['--', id, 'down', '/w/a b', 'focus'])
+  // With no pane to split from, the one Claude Code runs in.
+  expect(iterm.split({ direction: 'right', cwd: '/w', focus: false, home: 'HOME' }).slice(3)).toEqual(['--', 'HOME', 'right', '/w', 'keep'])
+  expect(iterm.paneId(`${id}\n`)).toBe(id)
+  expect(iterm.paneId('execution error: not allowed')).toBeUndefined()
+  // The read keeps osascript's failure as its own, and the pane is an argument.
+  const read = iterm.read(id, 50)
+  expect(read.slice(0, 2)).toEqual(['sh', '-c'])
+  expect(read.slice(-3)).toEqual([expect.stringContaining('contents'), id, '50'])
+  expect(iterm.idle(id).slice(-2)).toEqual([expect.stringContaining('tty'), id])
+  expect(iterm.interrupt(id)[2]).toContain('ASCII character 3')
+  expect(iterm.close(id)[2]).toContain('close')
+})
+
+test('iTerm2: the shell leads its terminal when it is the foreground group; login above it is not the shell', () => {
+  const iterm = driver('iterm')
+  // pid ppid tpgid: login (parent is iTerm's), the shell, a command the shell started.
+  const idle = '14109 93093 14121\n14121 14109 14121\n'
+  const busy = '14109 93093 16225\n14121 14109 16225\n16225 14121 16225\n'
+  expect(iterm.isIdle(idle)).toBe(true)
+  expect(iterm.shellPid(idle)).toBe(14121)
+  expect(iterm.isIdle(busy)).toBe(false)
+  expect(iterm.shellPid(busy)).toBe(14121)
+  // A profile that runs the shell itself: no login above it.
+  expect(iterm.isIdle('200 1 200\n')).toBe(true)
+  expect(iterm.isIdle('200 1 300\n')).toBe(false)
+  for (const text of ['', 'garbage', '1 1\n']) {
+    expect(iterm.isIdle(text), text).toBe(false)
+    expect(iterm.shellPid(text), text).toBeUndefined()
+  }
+})
+
+test('rows that end in spaces (iTerm2 pads every row) read as the lines they are', () => {
+  const shown = ['# jail @ host [7:59:00] ', '$ ls \u00a0', 'a ', 'b  ', ' ', '# jail @ host [8:00:00] ', '$  ', ' ', ' '].join('\n')
+  expect(echoes(shown, 'ls')).toBe(1)
+  expect(readPane(shown, 'ls', true)).toBe('a\nb')
+  expect(readPane(shown, 'ls', false)).toBe('a\nb\n\n# jail @ host [8:00:00]\n$')
 })

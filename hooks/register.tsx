@@ -14,7 +14,7 @@ import {
   WRAPPER,
 } from './run'
 import type { PartKind, RunStatus } from './run'
-import { detectMux, driver, echoes, HIDDEN_ATTACH, HIDDEN_SOCKET, isTmuxPane, readPane, selectArgv, TMUX_VERSION } from './mux'
+import { detectMux, driver, echoes, HIDDEN_ATTACH, HIDDEN_SOCKET, isTmuxPane, itermSessionId, readPane, selectArgv, TMUX_VERSION } from './mux'
 import type { Mux } from './mux'
 import { hasControls, ITERM_PATH, lineArgv, NOT_MACOS, oneLine, osascriptArgv } from './shell'
 import type { TerminalApp } from './shell'
@@ -197,33 +197,38 @@ function finish($: EngineInterface, run: Run, status: RunStatus, code: number | 
 
 const envOf = (read: Promise<string | undefined>): Promise<string | undefined> => read.catch(() => undefined)
 
-// The multiplexer the session runs in, if any: herdr or tmux, from the variables they set for what runs in them.
+// The pane iTerm2 runs Claude Code in: new panes are split from it, not from whichever pane has the focus.
+let home: string | undefined
+
+// The multiplexer the session runs in, if any: herdr, tmux or iTerm2, from the variables they set for what runs in them.
 async function findMux($: EngineInterface): Promise<Mux | undefined> {
   if ((await settings($)).multiplexer === false) return undefined
-  const [herdrEnv, herdrPane, tmux, tmuxPane] = await Promise.all([
+  const [herdrEnv, herdrPane, tmux, tmuxPane, termProgram, itermSession] = await Promise.all([
     envOf($.env.get('HERDR_ENV')),
     envOf($.env.get('HERDR_PANE_ID')),
     envOf($.env.get('TMUX')),
     envOf($.env.get('TMUX_PANE')),
+    envOf($.env.get('TERM_PROGRAM')),
+    envOf($.env.get('ITERM_SESSION_ID')),
   ])
-  return detectMux({ herdrEnv, herdrPane, tmux, tmuxPane })
+  const mux = detectMux({ herdrEnv, herdrPane, tmux, tmuxPane, termProgram, itermSession })
+  if (mux === 'iterm') home = itermSessionId(itermSession)
+  return mux
 }
 
 // Whether tmux is installed, asked once: the hidden terminals need it, and without it a run is a process of
 // the mod, as before.
 let hasTmux: Promise<boolean> | undefined
 
-// Where a run goes: a pane of the person's multiplexer, else a window of the hidden tmux server; none
-// without tmux either.
-async function findBackend($: EngineInterface): Promise<Mux | undefined> {
-  const mux = await findMux($)
-  if (mux) return mux
-  if ((await settings($)).multiplexer === false) return undefined
+// Whether the hidden tmux server can take a run: where the person has no multiplexer of their own to split, or
+// iTerm2 could not. Asked when it is needed, not before.
+async function canHide($: EngineInterface): Promise<boolean> {
+  if ((await settings($)).multiplexer === false) return false
   hasTmux ??= $.process.run(TMUX_VERSION, { timeoutMs: 3_000 }).then(
     ran => ran.exitCode === 0,
     () => false,
   )
-  return (await hasTmux) ? 'hidden' : undefined
+  return hasTmux
 }
 
 const MUX_MS = 5_000
@@ -304,7 +309,7 @@ async function idlePane($: EngineInterface, mux: Mux, run: Run): Promise<string 
 async function splitPane($: EngineInterface, mux: Mux, cwd: string): Promise<string | undefined> {
   const d = driver(mux)
   const split = async (target: string | undefined): Promise<string | undefined> => {
-    const made = await $.process.run(d.split({ target, direction: target ? 'down' : 'right', cwd, focus: false }), { cwd, timeoutMs: MUX_MS })
+    const made = await $.process.run(d.split({ target, direction: target ? 'down' : 'right', cwd, focus: false, home }), { cwd, timeoutMs: MUX_MS })
     return made.exitCode === 0 ? d.paneId(made.stdout) : undefined
   }
   const parent = lastPane?.mux === mux ? lastPane.id : undefined
@@ -349,6 +354,8 @@ async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Prom
       if (pane) await waitForPrompt($, mux, pane)
     }
     if (!pane) return false
+    // Typed into a terminal, a control character acts as a key, so a command that holds one is not typed.
+    if (mux === 'iterm' && hasControls(run.cmd)) throw new Error('a control character in the command')
     // What the pane showed before: the command typed again must show up as one more line than this.
     before = echoes(await paneText($, mux, pane), run.cmd)
     for (const argv of d.type(pane, run.cmd)) {
@@ -419,9 +426,13 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
   const stopped = new Promise<'stop'>(resolve => {
     run.release = () => resolve('stop')
   })
-  const mux = await findBackend($)
   // One line, as typed at a prompt: a command of several lines would be run line by line.
-  if (mux && !cmd.includes('\n') && (await startInPane($, run, mux, stopped))) return run
+  if (!cmd.includes('\n')) {
+    // The person's multiplexer or iTerm2 first; failing that (or with neither), the hidden tmux server.
+    const mux = await findMux($)
+    if (mux && (await startInPane($, run, mux, stopped))) return run
+    if ((!mux || mux === 'iterm') && (await canHide($)) && (await startInPane($, run, 'hidden', stopped))) return run
+  }
   void (async () => {
     const stream = $.process.spawn({ argv: ['sh', '-c', WRAPPER, 'sh', cmd], cwd: run.cwd })
     const it = stream[Symbol.asyncIterator]()
@@ -465,7 +476,8 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
 async function openShell($: EngineInterface): Promise<string> {
   try {
     const mux = await findMux($)
-    if (mux) {
+    // iTerm2 has no multiplexer to split: /shell keeps opening its window.
+    if (mux && mux !== 'iterm') {
       const folder = await $.session.cwd()
       const made = await $.process.run(driver(mux).split({ direction: 'right', cwd: folder, focus: true }), { cwd: folder, timeoutMs: MUX_MS })
       if (made.exitCode === 0) {

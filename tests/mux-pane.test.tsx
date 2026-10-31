@@ -88,6 +88,48 @@ function engine(on: On, machine: Machine): void {
     if (bin === 'uname') return done('Darwin\n')
     // The hidden server's windows are made by a script that starts tmux itself.
     if (bin === 'sh' && rest[0] === '-c' && rest[1]?.includes('new-window')) return machine.isSplitBroken ? done('', 1, 'no server') : done(`%${++panes}\n`)
+    // iTerm2: its panes are ids, driven by osascript; the read and the idle test are `sh` scripts around it.
+    const script = bin === 'osascript' ? String(rest[1]) : bin === 'sh' ? String(rest[3]) : ''
+    if (script.includes('findSession')) {
+      const args = bin === 'osascript' ? rest.slice(3) : rest.slice(4)
+      const pane = String(args[0])
+      const n = Number(/(\d+)$/.exec(pane)?.[1])
+      const gonePane = machine.gone?.has(pane) === true
+      if (script.includes('split vertically')) {
+        if (machine.gone?.has(pane) || machine.isSplitBroken) return done('', 1, 'no iTerm pane')
+        return done(`00000000-0000-0000-0000-${String(++panes).padStart(12, '0')}\n`)
+      }
+      if (gonePane) return done('', 1, 'no iTerm pane')
+      if (script.includes('ASCII character 3')) {
+        interrupted.add(pane)
+        return done()
+      }
+      if (script.includes('to close')) {
+        machine.gone ??= new Set()
+        machine.gone.add(pane)
+        return done()
+      }
+      if (script.includes('write text (item 2')) {
+        const before = typed.get(pane)
+        if (before !== undefined) earlier.set(pane, `${earlier.get(pane) ?? ''}${machine.screen?.(before, 99, false).text ?? ''}`)
+        typed.set(pane, String(args[1]))
+        reads.set(pane, 0)
+        interrupted.delete(pane)
+        return done()
+      }
+      if (script.includes('return contents')) {
+        const count = (reads.get(pane) ?? 0) + 1
+        reads.set(pane, count)
+        const line = typed.get(pane)
+        return done(`${earlier.get(pane) ?? ''}${line === undefined ? '' : (machine.screen?.(line, count, interrupted.has(pane)).text ?? '')}`)
+      }
+      if (script.includes('return tty')) {
+        const line = typed.get(pane)
+        const isBusy = line === undefined ? machine.busy?.has(pane) === true : machine.screen?.(line, reads.get(pane) ?? 0, interrupted.has(pane))?.isBusy === true
+        // login (its parent is iTerm's), and the shell below it.
+        return done(`  90 1 ${isBusy ? 99 : 100 + n}\n ${100 + n} 90 ${isBusy ? 99 : 100 + n}\n`)
+      }
+    }
     // Whether a pane's shell is at its prompt: herdr's process info, tmux's ps.
     if ((bin === 'herdr' && rest[1] === 'process-info') || (bin === 'sh' && rest[0] === '-c')) {
       const pane = (bin === 'sh' ? argv[4] : argv[argv.length - 1]) as string
@@ -164,6 +206,8 @@ async function untilOver($: Parameters<Parameters<typeof test>[1]>[0]): Promise<
 const machineOf = (extra: Partial<Machine> = {}): Machine => ({ env: {}, calls: [], spawned: [], toasts: [], ...extra })
 const HERDR = { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p0' }
 const TMUX = { TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%0' }
+const ITERM_HOME = '36B98952-11FE-4BEB-AABF-EA2E02581F1A'
+const ITERM = { TERM_PROGRAM: 'iTerm.app', ITERM_SESSION_ID: `w0t0p0:${ITERM_HOME}` }
 
 // A command that prints two lines, runs through its first look and is over on its second.
 const PROMPT = 'me@h:~/app$'
@@ -599,4 +643,83 @@ test('a pane just made is looked at until its shell has settled before the comma
   // More than the one read that counts the command's earlier echoes: the stub's pane never shows a prompt,
   // so the wait runs its course and the command is typed anyway.
   expect(machine.calls.slice(0, typedAt).filter(argv => argv.includes('capture-pane')).length).toBeGreaterThan(2)
+})
+
+test('in iTerm2 /rp splits a pane on the right of the pane Claude Code runs in and types the command there', async ($, on) => {
+  const machine = machineOf({ env: ITERM, screen: finishing() })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+
+  machine.opened = []
+  // The command is in the iTerm pane already: the Run pane stays shut.
+  expect((await gt($, 'vi notes.txt')).text).toBe('$ vi notes.txt')
+  expect(machine.opened).toEqual([])
+  expect(machine.spawned).toEqual([])
+  // No tmux is asked about: iTerm has its own panes.
+  expect(machine.calls.some(argv => argv[0] === 'tmux')).toBe(false)
+  const split = machine.calls.find(argv => argv[0] === 'osascript' && argv[2]?.includes('split vertically'))
+  expect(split?.slice(3)).toEqual(['--', ITERM_HOME, 'right', '/w/sample-app', 'keep'])
+  const typed = machine.calls.find(argv => argv[0] === 'osascript' && argv[2]?.includes('write text (item 2'))
+  expect(typed?.slice(3)).toEqual(['--', '00000000-0000-0000-0000-000000000001', 'vi notes.txt'])
+  // The command is an argument of the script, never part of its text.
+  expect(typed?.[2]).not.toContain('vi notes.txt')
+
+  await untilOver($)
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'restart:1' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /building/ })).toBeDefined()
+  expect(await ui.find({ key: 'attach:1' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('in iTerm2 the next run is split below the last, Stop types Ctrl+C, and leaving closes the panes', async ($, on) => {
+  const machine = machineOf({ env: ITERM, screen: cmd => ({ text: `${PROMPT} ${cmd}\nready\n`, isBusy: true }) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm run dev')
+  await gt($, 'npm test')
+
+  const splits = machine.calls.filter(argv => argv[0] === 'osascript' && argv[2]?.includes('split vertically'))
+  expect(splits[1]?.slice(3)).toEqual(['--', '00000000-0000-0000-0000-000000000001', 'down', '/w/sample-app', 'keep'])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // The newest run is the one the pane shows.
+  await ui.press({ key: 'stop:2' })
+  await until(() => machine.calls.some(argv => argv[2]?.includes('ASCII character 3')))
+  expect(machine.calls.find(argv => argv[2]?.includes('ASCII character 3'))?.slice(3)).toEqual(['--', '00000000-0000-0000-0000-000000000002'])
+  await ui.unmount()
+
+  await $.session.end(ending('prompt_input_exit'))
+  const closed = machine.calls.filter(argv => argv[2]?.includes('to close')).map(argv => argv[4])
+  expect(closed.sort()).toEqual(['00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002'])
+})
+
+test('in iTerm2 a command with a control character is not typed: the pane made for it is closed and the hidden tmux takes the run', async ($, on) => {
+  const machine = machineOf({ env: ITERM, hasTmux: true, screen: finishing() })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'echo \u0015x')
+
+  expect(machine.calls.some(argv => argv[2]?.includes('write text (item 2'))).toBe(false)
+  expect(machine.calls.some(argv => argv[2]?.includes('to close'))).toBe(true)
+  expect(machine.calls.some(argv => argv[0] === 'tmux' && argv.includes('send-keys'))).toBe(true)
+})
+
+test('in iTerm2 where the split fails and tmux is missing, the command runs as a process of the mod', async ($, on) => {
+  const machine = machineOf({ env: ITERM, hasTmux: false, isSplitBroken: true })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+
+  expect(machine.spawned).toHaveLength(1)
+})
+
+test('/shell still opens a window in iTerm2, not a pane', async ($, on) => {
+  const machine = machineOf({ env: ITERM })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'shell', args: '' })
+
+  expect(machine.calls.some(argv => argv[2]?.includes('split vertically'))).toBe(false)
+  expect(machine.calls.some(argv => argv[0] === 'osascript' && argv.includes('/w/sample-app'))).toBe(true)
 })
