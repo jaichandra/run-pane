@@ -12,7 +12,8 @@ import {
   MAX_LINES,
   readPid,
   BUTTON_COLORS,
-  BUTTON_INK,
+  BUTTON_HOVERS,
+  BUTTON_INKS,
   RunLog,
   shellQuote,
   statusMark,
@@ -836,15 +837,12 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const tags = $.ui.resolve(e)
     const { Box, Text, Button } = tags
-    // What a button looks like: its label on a background, a space each side, and half-block ends so it reads as a pill
-    // (a half block in the button's colour, on the pane's own background).
-    const face = (label: string, tone: keyof typeof TONES = 'neutral'): JSX.Element => (
-      <Text>
-        <Text color={TONES[tone]}>{'\u2590'}</Text>
-        <Text color={BUTTON_INK} backgroundColor={TONES[tone]}>
-          {` ${label} `}
-        </Text>
-        <Text color={TONES[tone]}>{'\u258c'}</Text>
+    // What a button looks like: its label on a light background, a space each side. Drawn swapped (`inverse`: the light
+    // colour is the text colour, the deep shade the ground), so that the engine's swap under the pointer and the focus
+    // leaves it as it is, and 10% darker under the pointer by `hover` (a scope of its own, so it needs no keyed Box).
+    const face = (label: string, tone: keyof typeof TONES, scope: string): JSX.Element => (
+      <Text inverse color={TONES[tone]} backgroundColor={BUTTON_INKS[tone]} hover={{ scope: `b:${scope}`.slice(0, 64), color: BUTTON_HOVERS[tone] }}>
+        {` ${label} `}
       </Text>
     )
     const Input = 'Input' in tags ? tags.Input : undefined
@@ -868,10 +866,10 @@ export const register: Register = on => {
     // The rows the output box has: the pane less what is drawn around it, counted high where it
     // wraps (the hint, the buttons), so scrolling stops with the first line at the top, not past it.
     // The suggestions are chips that wrap: about as many rows as their width fills.
-    const hintWidth = 4 + groupSuggestions(hints).reduce((sum, group) => sum + (group.prefix ? group.prefix.length + 1 : 0) + group.items.reduce((inner, item) => inner + item.label.length + 5, 0), 0)
-    const hintRows = hints.length > 0 ? 2 * Math.max(1, Math.ceil(hintWidth / Math.max(20, e.props.bodyColumns - 2))) + 1 : 0
+    const hintWidth = 4 + groupSuggestions(hints).reduce((sum, group) => sum + (group.prefix ? group.prefix.length + 1 : 0) + group.items.reduce((inner, item) => inner + item.label.length + 3, 0), 0)
+    const hintRows = hints.length > 0 ? Math.max(1, Math.ceil(hintWidth / Math.max(20, e.props.bodyColumns - 2))) + 1 : 0
     const chrome =
-      1 + (e.props.placement === 'inline' ? 4 : 0) + 1 + hintRows + Math.max(1, runs.length) + 3 + (e.props.bodyColumns < 80 ? 2 : 1)
+      1 + 1 + (e.props.placement === 'inline' ? 4 : 0) + 1 + (hints.length > 0 ? 1 : 0) + hintRows + Math.max(1, runs.length) + 3 + (e.props.bodyColumns < 80 ? 2 : 1)
     const visible = Math.max(1, rows - chrome)
     newest = Math.max(0, (picked?.log.size ?? 0) - visible)
     back = Math.min(back, newest)
@@ -930,7 +928,7 @@ export const register: Register = on => {
               else void stop($, picked)
             }}
           >
-            {face(picked.isStopping ? 'Force kill' : 'Stop (Ctrl+C)', 'danger')}
+            {face(picked.isStopping ? 'Force kill' : 'Stop (Ctrl+C)', 'danger', `stop:${picked.id}`)}
           </Button>
         )}
         {picked && picked.status !== 'running' && (
@@ -944,7 +942,7 @@ export const register: Register = on => {
               void start($, picked.cmd)
             }}
           >
-            {face('Restart', 'primary')}
+            {face('Restart', 'primary', `restart:${picked.id}`)}
           </Button>
         )}
         {picked && (
@@ -957,7 +955,7 @@ export const register: Register = on => {
               redraw($)
             }}
           >
-            {face('Clear')}
+            {face('Clear', 'neutral', `clear:${picked.id}`)}
           </Button>
         )}
         {picked && picked.status !== 'running' && (
@@ -972,15 +970,15 @@ export const register: Register = on => {
               redraw($)
             }}
           >
-            {face('Remove')}
+            {face('Remove', 'neutral', `remove:${picked.id}`)}
           </Button>
         )}
         {/* The selected run's terminal, or a shell with its command; with no run, a shell in the folder. */}
         <Button plain key={`shell`} label="Open in shell" onPress={() => void (picked ? openInShell($, picked) : openShell($)).then(text => $.ui.toast(text))}>
-          {face('Open in shell', 'primary')}
+          {face('Open in shell', 'primary', 'shell')}
         </Button>
         <Button plain key={`close`} label="Close pane" onPress={() => void $.ui.close({ id: PANE })}>
-          {face('Close pane')}
+          {face('Close pane', 'neutral', 'close')}
         </Button>
       </Box>
     )
@@ -992,6 +990,8 @@ export const register: Register = on => {
         <Text bold wrap="truncate-start">
           {folderName(cwd)}
         </Text>
+        {/* A row after the title; the same row between the parts below. */}
+        <Text> </Text>
         {e.props.placement === 'inline' && (
           <Text color="error" bold wrap="wrap">
             {DOCK_HINT}
@@ -1009,11 +1009,10 @@ export const register: Register = on => {
         ) : (
           <Text dimColor>Type &gt; &lt;command&gt; to start one.</Text>
         )}
+        {hints.length > 0 && <Text> </Text>}
         {hints.length > 0 && (
-          // Each tile is a cap (the lower half of a row, in the pill's colour: the pill is a row and a half tall, with
-          // rounded corners) over the pill. So the rows of pills are half a row apart, and the words beside them
-          // sit on the pill's own row (aligned to the bottom).
-          <Box flexWrap="wrap" columnGap={1} alignItems="flex-end">
+          // One row high, as the buttons at the bottom are: the words they share once, then a button each.
+          <Box flexWrap="wrap" columnGap={1}>
             <Text dimColor>Try</Text>
             {groupSuggestions(hints).flatMap(group => [
               ...(group.prefix ? [<Text dimColor key={`prefix:${group.prefix}:${group.items[0]?.cmd}`}>{group.prefix}</Text>] : []),
@@ -1021,18 +1020,15 @@ export const register: Register = on => {
                 const kind = suggestionKind(item.cmd)
                 const tone = kind === 'run' ? 'primary' : kind === 'test' ? 'success' : 'neutral'
                 return (
-                  <Box key={`tile:${item.cmd}`} flexDirection="column">
-                    <Text color={TONES[tone]}>{` ${'\u2584'.repeat(item.label.length + 2)} `}</Text>
-                    <Button plain key={`hint:${item.cmd}`} label={item.cmd} onPress={() => go(item.cmd)}>
-                      {face(item.label, tone)}
-                    </Button>
-                  </Box>
+                  <Button plain key={`hint:${item.cmd}`} label={item.cmd} onPress={() => go(item.cmd)}>
+                    {face(item.label, tone, `hint:${item.cmd}`)}
+                  </Button>
                 )
               }),
             ])}
           </Box>
         )}
-        {/* The same half row, in a whole one, between the suggestions and the runs. */}
+        {/* A row between the suggestions and the runs. */}
         {hints.length > 0 && <Text> </Text>}
         {runs.length === 0 && <Text dimColor>Nothing running. Pick a suggestion or type a command.</Text>}
         {runs.map(run => (
@@ -1047,7 +1043,7 @@ export const register: Register = on => {
             {run.mux === 'hidden' && run.status === 'running' && <Text> </Text>}
             {run.mux === 'hidden' && run.status === 'running' && (
               <Button plain key={`attach:${run.id}`} label="Attach" onPress={() => void attach($, run).then(text => $.ui.toast(text))}>
-                {face('Attach', 'primary')}
+                {face('Attach', 'primary', `attach:${run.id}`)}
               </Button>
             )}
             {run.isInteractive && run.mux && run.mux !== 'hidden' && run.status === 'running' && <Text dimColor> in a terminal pane</Text>}
@@ -1068,6 +1064,8 @@ export const register: Register = on => {
             </Box>
           </Box>
         )}
+        {/* With no run there is no output box between the text above and the buttons: a row stands in. */}
+        {!picked && <Text> </Text>}
         {toolbar()}
       </Box>
     )

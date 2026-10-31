@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { BUTTON_COLORS } from '../hooks/run'
+import { BUTTON_COLORS, BUTTON_INKS } from '../hooks/run'
 
 // Nothing here starts herdr or tmux: `process.run` is answered by the stub below, which keeps a pane's
 // screen the way the multiplexer would show it, and records what it was asked to run.
@@ -849,8 +849,7 @@ test('the Attach button has a space before it in the run row and a background', 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const row = await ui.find({ type: 'Box', text: /vi package\.json.*running.*Attach/ })
   // `vi package.json running` then a space, then the button: "running [ Attach ]".
-  expect(row?.text).toMatch(/running\s+\u2590 Attach \u258c/)
-  const pill = (await ui.find({ type: 'Text', text: '\u2590 Attach \u258c' })) as { children?: { props?: Record<string, unknown> }[] } | undefined
-  expect(pill?.children?.[1]?.props?.backgroundColor).toBe(BUTTON_COLORS.primary)
+  expect(row?.text).toMatch(/running\s+Attach/)
+  expect((await ui.find({ type: 'Text', text: ' Attach ' }))?.props).toMatchObject({ inverse: true, color: BUTTON_COLORS.primary, backgroundColor: BUTTON_INKS.primary })
   await ui.unmount()
 })

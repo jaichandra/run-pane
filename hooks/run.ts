@@ -93,9 +93,29 @@ export class RunLog {
 /** A word for a shell line, in single quotes, whatever it holds. */
 export const shellQuote = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`
 
-// The buttons' colours: light grounds with dark text, so they read on a dark theme and a light one.
+// The buttons' colours: a light ground, a deep shade of it for the text, and the ground 10% darker under the pointer.
+// A button is drawn with its text and ground swapped (a Text with `inverse`: the colour is set as the text colour, the
+// deep shade as the ground), so that the engine's own swap under the pointer or the focus, which would make it a dark
+// block, finds it swapped already; the darker shade is what the pointer shows (`hover`).
 export const BUTTON_COLORS = { neutral: '#bdbdc6', primary: '#c3c9fb', danger: '#ff9fb0', success: '#8ed99f' } as const
-export const BUTTON_INK = '#1b1b2b'
+export const BUTTON_INKS = { neutral: '#42424e', primary: '#363f9a', danger: '#8a1a34', success: '#17602f' } as const
+
+/** A colour (`#rrggbb`) made darker by a share of its brightness: `darken('#c3c9fb', 0.1)` is 90% of each channel. */
+export function darken(color: string, share: number): string {
+  const channel = (at: number): string =>
+    Math.max(0, Math.min(255, Math.round(parseInt(color.slice(at, at + 2), 16) * (1 - share))))
+      .toString(16)
+      .padStart(2, '0')
+  return `#${channel(1)}${channel(3)}${channel(5)}`
+}
+
+export const BUTTON_HOVERS = {
+  neutral: darken(BUTTON_COLORS.neutral, 0.1),
+  primary: darken(BUTTON_COLORS.primary, 0.1),
+  danger: darken(BUTTON_COLORS.danger, 0.1),
+  success: darken(BUTTON_COLORS.success, 0.1),
+} as const
+
 
 // Commands that take over the terminal or wait for the person at it, which a pipe cannot give them.
 const ALWAYS = new Set([

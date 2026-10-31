@@ -1,6 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
+  BUTTON_COLORS,
+  BUTTON_HOVERS,
+  darken,
   descendants,
   groupSuggestions,
   highlight,
@@ -229,4 +232,19 @@ test('a word for a shell line is one word, whatever it holds', () => {
   expect(shellQuote('/tmp/run-pane-x-1.log')).toBe("'/tmp/run-pane-x-1.log'")
   expect(shellQuote("it's $(x) `y`")).toBe("'it'\\''s $(x) `y`'")
   expect(shellQuote('')).toBe("''")
+})
+
+test('a colour can be made darker by a share, channel by channel', () => {
+  expect(darken('#ffffff', 0.1)).toBe('#e6e6e6')
+  expect(darken('#c3c9fb', 0.1)).toBe('#b0b5e2')
+  expect(darken('#8ed99f', 0.2)).toBe('#72ae7f')
+  expect(darken('#102030', 0)).toBe('#102030')
+  expect(darken('#102030', 1)).toBe('#000000')
+})
+
+test('the colour under the pointer is the button\'s 10% darker, never black', () => {
+  for (const tone of ['neutral', 'primary', 'danger', 'success'] as const) {
+    expect(BUTTON_HOVERS[tone]).toBe(darken(BUTTON_COLORS[tone], 0.1))
+    expect(BUTTON_HOVERS[tone]).not.toBe(BUTTON_COLORS[tone])
+  }
 })

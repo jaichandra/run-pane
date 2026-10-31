@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { BUTTON_COLORS, BUTTON_INK } from '../hooks/run'
+import { BUTTON_COLORS, BUTTON_HOVERS, BUTTON_INKS } from '../hooks/run'
 
 const PANE = {
   plugin: 'run-pane',
@@ -306,11 +306,10 @@ async function untilPrinted($: Parameters<Parameters<typeof test>[1]>[0], text: 
   }
 }
 
-// A button's face is a pill: a half block in the button's colour, the label on that colour, a half block. Its props.
-async function faceOf(ui: { find: (query: never) => Promise<unknown> }, label: string): Promise<{ edge?: unknown; label?: Record<string, unknown>; end?: unknown } | undefined> {
-  const pill = (await ui.find({ type: 'Text', text: `\u2590 ${label} \u258c` } as never)) as { children?: { props?: Record<string, unknown> }[] } | undefined
-  if (!pill?.children) return undefined
-  return { edge: pill.children[0]?.props?.color, label: pill.children[1]?.props, end: pill.children[2]?.props?.color }
+// A button's face is a rectangle: its label with a space each side, on its colour.
+async function faceOf(ui: { find: (query: never) => Promise<unknown> }, label: string): Promise<Record<string, unknown> | undefined> {
+  const face = (await ui.find({ type: 'Text', text: ` ${label} ` } as never)) as { props?: Record<string, unknown> } | undefined
+  return face?.props
 }
 
 // The props a part of a line is drawn with: the line is a Text, and each coloured part a Text nested in it.
@@ -427,45 +426,48 @@ test('a command that needs a terminal where there is none runs without one and s
   expect(got).toContain('no terminal to give it here')
 })
 
-test('buttons have a light background so they read as controls: a pill, its label in dark ink with a space each side', async ($, on) => {
+test('buttons are rectangles of a light colour, drawn swapped so the engine\'s own swap does not make them dark, and 10% darker under the pointer', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'npm run dev')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // `inverse` with the light colour as the text colour and the deep shade as the ground: it shows as the light colour
+  // on the deep shade's text, and the engine's swap (pointer, focus) finds it swapped already.
   const stop = await faceOf(ui, 'Stop (Ctrl+C)')
-  expect(stop?.label).toMatchObject({ color: BUTTON_INK, backgroundColor: BUTTON_COLORS.danger })
-  // The half blocks at the ends are in the button's own colour, so it reads as rounded.
-  expect(stop?.edge).toBe(BUTTON_COLORS.danger)
-  expect(stop?.end).toBe(BUTTON_COLORS.danger)
-  expect((await faceOf(ui, 'Clear'))?.label).toMatchObject({ color: BUTTON_INK, backgroundColor: BUTTON_COLORS.neutral })
-  expect((await faceOf(ui, 'Open in shell'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.primary })
-  expect((await faceOf(ui, 'Close pane'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.neutral })
+  expect(stop).toMatchObject({ inverse: true, color: BUTTON_COLORS.danger, backgroundColor: BUTTON_INKS.danger })
+  // (Under the pointer the colour is 10% darker, by the surface's own `hover`, which does not cross to the plugin: the
+  // colours are tested as they are made.)
+  expect(await faceOf(ui, 'Clear')).toMatchObject({ inverse: true, color: BUTTON_COLORS.neutral, backgroundColor: BUTTON_INKS.neutral })
+  expect(await faceOf(ui, 'Open in shell')).toMatchObject({ color: BUTTON_COLORS.primary, backgroundColor: BUTTON_INKS.primary })
+  // Rectangles: no rounded ends. And no black among the colours.
+  const text = (await ui.find({ type: 'Box', text: /Stop \(Ctrl\+C\)/ }))?.text ?? ''
+  expect(text).not.toMatch(/[\u2590\u258c]/)
+  for (const colour of [...Object.values(BUTTON_COLORS), ...Object.values(BUTTON_INKS), ...Object.values(BUTTON_HOVERS)]) expect(colour).not.toBe('#000000')
   // The Shell button is the Open in shell one.
   expect(await faceOf(ui, 'Shell')).toBeUndefined()
   await ui.unmount()
 })
 
-test('the suggestions are pills in one wrapping row after a dim Try, with npm run said once and a colour for what they do', async ($, on) => {
+test('the suggestions are rectangles in one wrapping row after a dim Try, with npm run said once and a colour for what they do', async ($, on) => {
   const process = { calls: [] as string[][], lines: [] }
   engine(on, process, { 'package.json': '{"scripts":{"dev":"vite","test":"vitest","build":"tsc","start:ci":"x"}}' })
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const boxes = await ui.findAll({ type: 'Box' })
-  const row = boxes.find(box => box.props?.flexWrap === 'wrap' && /^Try\s*npm run/.test(box.text ?? '') && (box.text ?? '').includes('\u2590 dev \u258c'))
+  const row = boxes.find(box => box.props?.flexWrap === 'wrap' && /^Try\s*npm run/.test(box.text ?? '') && (box.text ?? '').includes(' dev '))
   expect(row).toBeDefined()
-  // Over each pill a cap, half a row in its colour (a space each side, two blocks more than the label is wide).
-  const cap = await ui.find({ type: 'Text', text: ` ${'\u2584'.repeat(5)} ` })
-  expect(cap?.props?.color).toBe(BUTTON_COLORS.primary)
-  expect(row?.props?.alignItems).toBe('flex-end')
+  // One row high, as the buttons at the bottom are: no cap over them, nothing but the row itself.
+  expect(row?.text).not.toContain('\u2584')
+  expect(row?.props?.rowGap).toBeUndefined()
   // The words every one starts with are in the row once, not in each button.
   expect(((row?.text ?? '').match(/npm run/g) ?? []).length).toBe(1)
-  expect((await faceOf(ui, 'dev'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.primary })
-  expect((await faceOf(ui, 'start:ci'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.primary })
-  expect((await faceOf(ui, 'test'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.success })
-  expect((await faceOf(ui, 'build'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.neutral })
+  expect(await faceOf(ui, 'dev')).toMatchObject({ color: BUTTON_COLORS.primary, backgroundColor: BUTTON_INKS.primary, inverse: true })
+  expect(await faceOf(ui, 'start:ci')).toMatchObject({ color: BUTTON_COLORS.primary })
+  expect(await faceOf(ui, 'test')).toMatchObject({ color: BUTTON_COLORS.success, backgroundColor: BUTTON_INKS.success })
+  expect(await faceOf(ui, 'build')).toMatchObject({ color: BUTTON_COLORS.neutral })
   // Pressing one still runs the whole command.
   expect(await ui.find({ key: 'hint:npm run dev' })).toBeDefined()
   await ui.press({ key: 'hint:npm run test' })
@@ -603,4 +605,30 @@ test('the output a script reads for a phrase reaches the pane as the command wro
 
   expect(process.spawns[0]?.argv.slice(-1)).toEqual(['sandbox start ci'])
   expect(process.spawns[0]?.env).toBeUndefined()
+})
+
+test('a row of space after the title, and between the parts of the pane', async ($, on) => {
+  const process = { calls: [] as string[][], lines: [] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const pane = (await ui.findAll({ type: 'Box' })).find(box => box.props?.flexDirection === 'column' && box.props?.flexShrink === 0)
+  const kids = ((pane as unknown as { children?: { type?: string; children?: unknown[] }[] })?.children ?? []).map(child => (child.type === 'Text' && child.children?.[0] === ' ' ? '_' : child.type))
+  // Title, space, the command field, space, the suggestions, space, the (empty) runs text.
+  expect(kids.slice(0, 6)).toEqual(['Text', '_', 'Input', '_', 'Box', '_'])
+  await ui.unmount()
+})
+
+test('with no run there is a row between the empty-state text and the buttons at the bottom', async ($, on) => {
+  const process = { calls: [] as string[][], lines: [] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const root = (await ui.findAll({ type: 'Box' })).find(box => box.props?.flexDirection === 'column' && box.props?.height !== undefined)
+  const kids = ((root as unknown as { children?: { type?: string; children?: unknown[] }[] })?.children ?? []).map(child => (child.type === 'Text' && child.children?.[0] === ' ' ? '_' : child.type))
+  // The top part, a row, the buttons.
+  expect(kids).toEqual(['Box', '_', 'Box'])
+  await ui.unmount()
 })
