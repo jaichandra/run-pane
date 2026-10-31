@@ -75,6 +75,21 @@ end run
 
 export const appleScript = (app: TerminalApp): string => (app === 'iTerm' ? ITERM_SCRIPT : TERMINAL_SCRIPT)
 
+/** The terminal to open a window in: the one Claude Code runs in (an app may always control itself; macOS asks before
+ * one controls another, and answers -1743 until it is allowed), else iTerm where it is installed, else Terminal. */
+export function pickApp(termProgram: string | undefined, isItermInstalled: boolean): TerminalApp {
+  if (termProgram === 'iTerm.app') return 'iTerm'
+  if (termProgram === 'Apple_Terminal') return 'Terminal'
+  return isItermInstalled ? 'iTerm' : 'Terminal'
+}
+
+/** Why osascript failed, in one line; when macOS has not allowed this terminal to control the app, how to allow it. */
+export function osascriptFailure(app: TerminalApp, stdout: string, stderr: string, code: number): string {
+  const said = oneLine(stderr || stdout) || `osascript exited with ${code}`
+  if (!/-1743|not authori[sz]ed to send apple events/i.test(said)) return `Could not open a window in ${app}: ${said}`
+  return `Could not open a window in ${app}: macOS has not allowed this terminal to control ${app}. Allow it in System Settings > Privacy & Security > Automation (switch ${app} on under the terminal Claude Code runs in), or run Claude Code in ${app}. (${said})`
+}
+
 /** The window's title: the folder's name. */
 export function shellTitle(folder: string): string {
   return folder.split('/').filter(Boolean).pop() ?? 'shell'

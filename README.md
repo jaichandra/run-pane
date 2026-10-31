@@ -104,7 +104,7 @@ When Claude Code runs inside [herdr](https://herdr.dev) (`HERDR_ENV=1`), tmux (`
 
 ### `/shell`
 
-In herdr or tmux, `/shell` splits a terminal pane on the right of Claude Code in the session's folder and focuses it. Anywhere else on macOS it opens a new window with a shell already in the session's folder, titled with the folder's name: iTerm if `/Applications/iTerm.app` exists and Terminal.app otherwise. The first time, macOS may ask whether Claude Code may control that app; if you say no, or anything else goes wrong, `/shell` says why in one line.
+In herdr or tmux, `/shell` splits a terminal pane on the right of Claude Code in the session's folder and focuses it. Anywhere else on macOS it opens a new window with a shell already in the session's folder, titled with the folder's name, in the terminal Claude Code runs in (iTerm or Terminal.app; in any other terminal, iTerm if `/Applications/iTerm.app` exists and Terminal.app otherwise). An app may always control itself, so the usual case needs no permission; opening a window in the *other* terminal makes macOS ask whether this one may control it. If you say no, `/shell` (and Attach) answers with where to allow it, System Settings > Privacy & Security > Automation; anything else that goes wrong it says in one line.
 
 Elsewhere `/shell` says so and does nothing. The folder (for the macOS window) is handed to AppleScript as an argument and quoted by AppleScript itself, never pasted into the script, so a name with quotes, spaces, backslashes, `$(...)` or a leading dash is just a name. A folder name that holds a control character (a newline, an escape) is refused, because typed into a terminal it would act as a key.
 

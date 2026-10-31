@@ -16,7 +16,7 @@ import {
 import type { PartKind, RunStatus } from './run'
 import { detectMux, driver, echoes, HIDDEN_ALIVE, HIDDEN_ATTACH, HIDDEN_SOCKET, isTmuxPane, itermSessionId, readPane, selectArgv, TMUX_VERSION } from './mux'
 import type { Mux } from './mux'
-import { hasControls, ITERM_PATH, lineArgv, NOT_MACOS, oneLine, osascriptArgv } from './shell'
+import { hasControls, ITERM_PATH, lineArgv, NOT_MACOS, oneLine, osascriptArgv, osascriptFailure, pickApp } from './shell'
 import type { TerminalApp } from './shell'
 
 const PANE = 'run'
@@ -231,6 +231,11 @@ async function canHide($: EngineInterface): Promise<boolean> {
   return hasTmux
 }
 
+// The terminal a window opens in: the one Claude Code runs in.
+async function terminalApp($: EngineInterface): Promise<TerminalApp> {
+  return pickApp(await envOf($.env.get('TERM_PROGRAM')), await $.fs.exists(ITERM_PATH))
+}
+
 const MUX_MS = 5_000
 const GONE_POLLS = 3
 
@@ -247,10 +252,10 @@ async function attach($: EngineInterface, run: Run): Promise<string> {
     await $.process.run(selectArgv(run.pane), { timeoutMs: MUX_MS }).catch(() => undefined)
     const system = await $.process.run(['uname', '-s'], { timeoutMs: 3_000 }).catch(() => undefined)
     if (system?.stdout.trim() !== 'Darwin') return way
-    const app: TerminalApp = (await $.fs.exists(ITERM_PATH)) ? 'iTerm' : 'Terminal'
+    const app = await terminalApp($)
     const made = await $.process.run(lineArgv(app, HIDDEN_ATTACH, `run #${run.id}`), { timeoutMs: 15_000 })
     if (made.exitCode === 0) return `Attached to #${run.id} in ${app}. Ctrl+B d leaves it.`
-    return `Could not open a window in ${app}: ${oneLine(made.stderr || made.stdout) || `osascript exited with ${made.exitCode}`}. ${way}`
+    return `${osascriptFailure(app, made.stdout, made.stderr, made.exitCode)} ${way}`
   } catch (error) {
     return `Could not open a terminal window: ${oneLine(error instanceof Error ? error.message : String(error)) || 'osascript did not start'}. ${way}`
   }
@@ -492,10 +497,10 @@ async function openShell($: EngineInterface): Promise<string> {
     if (system?.stdout.trim() !== 'Darwin') return NOT_MACOS
     const folder = await $.session.cwd()
     if (hasControls(folder)) return "The folder's name has a control character in it, so /shell will not type it into a terminal: open one there yourself."
-    const app: TerminalApp = (await $.fs.exists(ITERM_PATH)) ? 'iTerm' : 'Terminal'
+    const app = await terminalApp($)
     const made = await $.process.run(osascriptArgv(app, folder), { timeoutMs: 15_000 })
     if (made.exitCode === 0) return `Opened a shell window in ${app}: ${folder}`
-    return `Could not open a window in ${app}: ${oneLine(made.stderr || made.stdout) || `osascript exited with ${made.exitCode}`}`
+    return osascriptFailure(app, made.stdout, made.stderr, made.exitCode)
   } catch (error) {
     return `Could not open a terminal window: ${oneLine(error instanceof Error ? error.message : String(error)) || 'osascript did not start'}`
   }

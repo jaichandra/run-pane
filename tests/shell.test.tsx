@@ -10,6 +10,8 @@ type Machine = {
   /** What `uname -s` prints; null when there is no such command (it cannot start). */
   system?: string | null
   isItermInstalled?: boolean
+  /** The terminal Claude Code runs in (`TERM_PROGRAM`). */
+  termProgram?: string
   /** How the stubbed osascript ends: an answer, or a command that cannot start. */
   osascript?: { exitCode: number; stdout?: string; stderr?: string } | 'cannot-start'
   cwd?: string
@@ -32,7 +34,7 @@ const done = (stdout = '', stderr = '', exitCode = 0) => ({ value: { exitCode, s
 // Stands for the engine beneath the mod. A command that cannot start answers `{ deny }`, which is how a
 // call on `$` rejects.
 function engine(on: On, machine: Machine = {}): Seen {
-  const { system = 'Darwin', isItermInstalled = false, osascript = { exitCode: 0 }, cwd = '/w/sample-app' } = machine
+  const { system = 'Darwin', isItermInstalled = false, osascript = { exitCode: 0 }, cwd = '/w/sample-app', termProgram } = machine
   const seen: Seen = { calls: [], exists: [], toasts: [], cwd }
   on('command.register', () => ({ value: { command: 'shell' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__run-pane__run_output' } }))
@@ -48,6 +50,7 @@ function engine(on: On, machine: Machine = {}): Seen {
   on('fs.read', () => {
     throw new Error('missing')
   })
+  on('env.get', (_, e) => ({ value: e.name === 'TERM_PROGRAM' ? termProgram : undefined }))
   on('fs.exists', (_, e) => {
     seen.exists.push(e.path)
     return { value: e.path === ITERM_PATH && isItermInstalled }
@@ -189,7 +192,10 @@ test('when osascript fails /shell says why in one line, with the terminal it tri
   })
   const text = await runShell($, '/w/sample-app')
 
-  expect(text).toBe('Could not open a window in iTerm: 0:42: execution error: Not authorized to send Apple events to iTerm. (-1743) second line')
+  // macOS has not allowed the terminal to control iTerm: the way to allow it, and what macOS said, in one line.
+  expect(text).toContain('Could not open a window in iTerm: macOS has not allowed this terminal to control iTerm.')
+  expect(text).toContain('System Settings > Privacy & Security > Automation')
+  expect(text).toContain('(0:42: execution error: Not authorized to send Apple events to iTerm. (-1743) second line)')
   expect(text).not.toContain('\n')
   expect(osascripts(seen)).toHaveLength(1)
 })
@@ -226,4 +232,18 @@ test('the pane has a Shell window button that opens the same window and toasts t
   expect(osascripts(seen)).toHaveLength(1)
   expect(osascripts(seen)[0]?.slice(3)).toEqual(['--', '/w/sample-app', 'sample-app'])
   expect(seen.toasts).toEqual(['Opened a shell window in iTerm: /w/sample-app'])
+})
+
+test('the window opens in the terminal Claude Code runs in, which needs no permission, even where iTerm is installed', async ($, on) => {
+  const seen = engine(on, { isItermInstalled: true, termProgram: 'Apple_Terminal' })
+  const text = await runShell($, '/w/sample-app')
+
+  expect(text).toBe('Opened a shell window in Terminal: /w/sample-app')
+  expect(osascripts(seen)[0]?.[2]).toBe(appleScript('Terminal'))
+})
+
+test('in iTerm it is iTerm, and in a terminal that is neither it is iTerm where installed', async ($, on) => {
+  const inIterm = engine(on, { termProgram: 'iTerm.app' })
+  expect(await runShell($, '/w/sample-app')).toBe('Opened a shell window in iTerm: /w/sample-app')
+  expect(osascripts(inIterm)[0]?.[2]).toBe(appleScript('iTerm'))
 })

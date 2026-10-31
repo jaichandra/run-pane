@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { appleScript, hasControls, ITERM_PATH, lineArgv, oneLine, osascriptArgv, shellTitle } from '../hooks/shell'
+import { appleScript, hasControls, ITERM_PATH, lineArgv, oneLine, osascriptArgv, osascriptFailure, pickApp, shellTitle } from '../hooks/shell'
 
 test('each terminal has one fixed script that reads the folder and the title from argv', async () => {
   for (const app of ['iTerm', 'Terminal'] as const) {
@@ -54,4 +54,21 @@ test('a line typed into a window is the script\'s argument, never part of its te
   expect(script).not.toContain('do shell script')
   expect(script.match(/write text|do script/g)).toHaveLength(1)
   expect(lineArgv('iTerm', 'x', 't')[2]).toContain('create window with default profile')
+})
+
+test('a window opens in the terminal Claude Code runs in, else iTerm where it is installed', async () => {
+  expect(pickApp('iTerm.app', false)).toBe('iTerm')
+  expect(pickApp('Apple_Terminal', true)).toBe('Terminal')
+  expect(pickApp('WezTerm', true)).toBe('iTerm')
+  expect(pickApp('WezTerm', false)).toBe('Terminal')
+  expect(pickApp(undefined, false)).toBe('Terminal')
+})
+
+test('an osascript failure is one line, and a refusal by macOS says how to allow it', async () => {
+  expect(osascriptFailure('Terminal', '', 'boom\n  again', 1)).toBe('Could not open a window in Terminal: boom again')
+  expect(osascriptFailure('Terminal', '', '', 3)).toBe('Could not open a window in Terminal: osascript exited with 3')
+  const refused = osascriptFailure('iTerm', '', '193:227: execution error: Not authorized to send Apple events to iTerm. (-1743)', 1)
+  expect(refused).toContain('Automation')
+  expect(refused).toContain('switch iTerm on')
+  expect(refused).not.toContain('\n')
 })
