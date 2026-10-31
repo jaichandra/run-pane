@@ -26,7 +26,7 @@ const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) =>
 // Stands for the engine beneath the mod: the calls the mod makes are answered here.
 function engine(
   on: On,
-  process: { calls: string[][]; lines: string[]; remote?: string; opened?: string[] },
+  process: { calls: string[][]; lines: string[]; remote?: string; opened?: string[]; spawns?: { argv: readonly string[]; env?: Record<string, string> | undefined }[]; existing?: string[] },
   files: Record<string, string> = { 'package.json': '{"scripts":{"dev":"vite","test":"vitest"}}' },
 ) {
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -53,11 +53,15 @@ function engine(
     process.calls.push([...e.argv])
     // No tmux here: the commands are processes of the mod.
     if (e.argv[0] === 'tmux') return { value: { exitCode: 127, stdout: '', stderr: 'tmux: not found', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (e.argv[0] === 'uname') return { value: { exitCode: 0, stdout: 'Darwin\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[0] === 'git') return { value: { exitCode: 0, stdout: process.remote ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[0] === 'ps') return { value: { exitCode: 0, stdout: ' 4242 1\n 4243 4242\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('process.spawn', async function* () {
+  on('fs.exists', (_, e) => ({ value: process.existing?.includes(e.path) === true }))
+  on('env.get', (_, e) => ({ value: e.name === 'HOME' ? '/Users/me' : undefined }))
+  on('process.spawn', async function* (_, e) {
+    process.spawns?.push({ argv: e.argv, env: e.env })
     yield { stream: 'stderr' as const, text: '@@run-pane-pid 4242\n' }
     for (const line of process.lines) yield { stream: 'stdout' as const, text: line }
     // A dev server that goes quiet and stays up.
@@ -274,3 +278,120 @@ for (const [name, files] of [
     expect(process.calls.filter(argv => argv[0] === 'git')).toEqual([])
   })
 }
+
+const ESC = '\u001b'
+
+// Output arrives in pieces after the run starts: wait until the tool has all of what it printed.
+async function untilPrinted($: Parameters<Parameters<typeof test>[1]>[0], text: string): Promise<void> {
+  for (let tick = 0; tick < 400; tick++) {
+    if (String((await $.tool.call({ tool: 'mcp__run-pane__run_output' })).result).includes(text)) return
+    await new Promise<void>(resolve => setTimeout(resolve, 5))
+  }
+}
+
+// The props a part of a line is drawn with: the line is a Text, and each coloured part a Text nested in it.
+async function partOf(ui: { find: (query: never) => Promise<unknown> }, line: RegExp, word: string): Promise<Record<string, unknown> | undefined> {
+  const row = (await ui.find({ type: 'Text', text: line } as never)) as { children?: unknown[] } | undefined
+  const part = row?.children?.find(child => typeof child === 'object' && child !== null && (child as { children?: unknown[] }).children?.[0] === word)
+  return (part as { props?: Record<string, unknown> } | undefined)?.props
+}
+
+test('a command is a process of the mod, asked to colour its output, and its colours are drawn', async ($, on) => {
+  const process = {
+    calls: [] as string[][],
+    spawns: [] as { argv: readonly string[]; env?: Record<string, string> | undefined }[],
+    lines: [`${ESC}[31mfailed${ESC}[0m and ${ESC}[1;32mok${ESC}[0m, ${ESC}[38;5;196mhot${ESC}[0m ${ESC}[38;2;18;52;86mblue${ESC}[0m\n`, `${ESC}[2K${ESC}[3;4mnote${ESC}[0m\n`],
+  }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+  await untilPrinted($, 'note')
+
+  // No terminal for it, and the colour that tools keep for a terminal is asked for.
+  expect(process.calls.some(argv => argv[0] === 'tmux')).toBe(false)
+  expect(process.spawns[0]?.env).toEqual({ FORCE_COLOR: '1', CLICOLOR_FORCE: '1' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await partOf(ui, /failed/, 'failed'))?.color).toBe('red')
+  const ok = await partOf(ui, /failed/, 'ok')
+  expect(ok?.color).toBe('green')
+  expect(ok?.bold).toBe(true)
+  expect((await partOf(ui, /failed/, 'hot'))?.color).toBe('#ff0000')
+  expect((await partOf(ui, /failed/, 'blue'))?.color).toBe('#123456')
+  const note = await partOf(ui, /note/, 'note')
+  expect(note?.italic).toBe(true)
+  expect(note?.underline).toBe(true)
+  await ui.unmount()
+
+  // What Claude reads has no escape sequences in it.
+  const got = String((await $.tool.call({ tool: 'mcp__run-pane__run_output' })).result)
+  expect(got).toContain('failed and ok, hot blue')
+  expect(got).not.toContain(ESC)
+})
+
+test('a colour on a line goes on into the next ones, and a line with none keeps the colours its looks give it', async ($, on) => {
+  const process = { calls: [] as string[][], lines: [`${ESC}[33mwarn one\n`, 'warn two\n', `${ESC}[0m`, '\u25b6 All done\n', 'ERROR: it broke\n'] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'make')
+  await untilPrinted($, 'ERROR: it broke')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await partOf(ui, /warn one/, 'warn one'))?.color).toBe('yellow')
+  expect((await partOf(ui, /warn two/, 'warn two'))?.color).toBe('yellow')
+  // Plain lines: the banner and the error word are told by what they say.
+  expect((await partOf(ui, /All done/, '\u25b6 All done'))?.color).toBe('success')
+  expect((await partOf(ui, /ERROR: it broke/, 'ERROR: it broke'))?.color).toBe('error')
+  await ui.unmount()
+})
+
+test('a URL in the output is a press that opens it in the browser', async ($, on) => {
+  const process = { calls: [] as string[][], lines: ['Local: https://localhost:3000/app?x=1 (ready)\n'] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm run dev')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const link = await ui.find({ key: 'link:1:0:1' })
+  expect(link).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: 'https://localhost:3000/app?x=1' }))?.props?.underline).toBe(true)
+  await ui.press({ key: 'link:1:0:1' })
+  await new Promise<void>(resolve => setTimeout(resolve, 20))
+  // The URL is an argument of the opener, with no shell around it.
+  expect(process.calls).toContainEqual(['open', 'https://localhost:3000/app?x=1'])
+  await ui.unmount()
+})
+
+test('a file in the output that exists is a press that opens it, one that does not stays text', async ($, on) => {
+  const process = {
+    calls: [] as string[][],
+    existing: ['/w/sample-app/src/app.ts', '/Users/me/notes/a.md'],
+    lines: ['src/app.ts:12:5 - error TS1\n', 'see ~/notes/a.md\n', 'src/gone.ts:1 and a/b\n'],
+  }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'tsc')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'link:1:0:0' })).toBeDefined()
+  expect(await ui.find({ key: 'link:1:1:1' })).toBeDefined()
+  // Neither the missing file nor the word with a slash is a link.
+  expect(await ui.find({ key: 'link:1:2:0' })).toBeUndefined()
+  expect(await ui.find({ key: 'link:1:2:1' })).toBeUndefined()
+  await ui.press({ key: 'link:1:0:0' })
+  await ui.press({ key: 'link:1:1:1' })
+  await new Promise<void>(resolve => setTimeout(resolve, 20))
+  // Resolved from the run's folder, and from the home folder for `~/`; the line number is not part of the path.
+  expect(process.calls).toContainEqual(['open', '/w/sample-app/src/app.ts'])
+  expect(process.calls).toContainEqual(['open', '/Users/me/notes/a.md'])
+  await ui.unmount()
+})
+
+test('a command that needs a terminal where there is none runs without one and says so', async ($, on) => {
+  const process = { calls: [] as string[][], lines: ['prompt\n'] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'vi notes.txt')
+
+  const got = String((await $.tool.call({ tool: 'mcp__run-pane__run_output' })).result)
+  expect(got).toContain('no terminal to give it here')
+})

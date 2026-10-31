@@ -206,7 +206,9 @@ async function untilOver($: Parameters<Parameters<typeof test>[1]>[0]): Promise<
   }
 }
 
-const machineOf = (extra: Partial<Machine> = {}): Machine => ({ env: {}, calls: [], spawned: [], toasts: [], ...extra })
+// These tests are about commands that get a terminal, so every command does (`panes: "all"`), unless a test says otherwise.
+const ALL = '{"panes":"all"}'
+const machineOf = (extra: Partial<Machine> = {}): Machine => ({ env: {}, calls: [], spawned: [], toasts: [], settings: ALL, ...extra })
 const HERDR = { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p0' }
 const TMUX = { TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%0' }
 const ITERM_HOME = '36B98952-11FE-4BEB-AABF-EA2E02581F1A'
@@ -222,10 +224,10 @@ test('in herdr /rp splits a pane on the right, types the command as it is and st
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
-  // The command is in the herdr pane already: the Run pane stays shut until /rp asks for it.
+  // The Run pane opens to follow it, and the reply says where it runs.
   machine.opened = []
-  expect((await gt($, 'npm test')).text).toBe('$ npm test')
-  expect(machine.opened).toEqual([])
+  expect((await gt($, 'npm test')).text).toContain('Started #1: npm test (in a herdr pane beside Claude Code)')
+  expect(machine.opened).toEqual(['run'])
   expect(machine.spawned).toEqual([])
   expect(machine.calls.find(argv => argv[2] === 'split')).toEqual(['herdr', 'pane', 'split', '--current', '--direction', 'right', '--cwd', '/w/sample-app', '--no-focus'])
   // Nothing but the command, so the pane reads as the person's own shell.
@@ -654,9 +656,8 @@ test('in iTerm2 /rp splits a pane on the right of the pane Claude Code runs in a
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
   machine.opened = []
-  // The command is in the iTerm pane already: the Run pane stays shut.
-  expect((await gt($, 'vi notes.txt')).text).toBe('$ vi notes.txt')
-  expect(machine.opened).toEqual([])
+  expect((await gt($, 'vi notes.txt')).text).toContain('Started #1: vi notes.txt (in an iTerm2 pane beside Claude Code)')
+  expect(machine.opened).toEqual(['run'])
   expect(machine.spawned).toEqual([])
   // No tmux is asked about: iTerm has its own panes.
   expect(machine.calls.some(argv => argv[0] === 'tmux')).toBe(false)
@@ -741,4 +742,79 @@ test('Attach on a hidden terminal that has ended says so and opens no window', a
   expect(machine.calls.some(argv => argv[0] === 'osascript')).toBe(false)
   expect(machine.calls.some(argv => argv.includes('select-window'))).toBe(false)
   await ui.unmount()
+})
+
+test('by default an ordinary command stays in the Run pane, even inside herdr, and asks for no terminal', async ($, on) => {
+  const machine = machineOf({ env: HERDR, hasTmux: true, settings: '{}' })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+
+  expect(machine.spawned).toHaveLength(1)
+  expect(machine.calls.some(argv => argv[0] === 'herdr' || argv[0] === 'tmux')).toBe(false)
+})
+
+test('a command that needs a terminal gets one, and the Run pane lists it with an Attach next to it', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, settings: '{}', screen: cmd => ({ text: `${PROMPT} ${cmd}\n`, isBusy: true }) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  machine.opened = []
+  const said = (await gt($, 'vim notes.txt')).text
+  expect(said).toContain('needs a terminal: press Attach in the Run pane')
+  expect(machine.opened).toEqual(['run'])
+  expect(machine.spawned).toEqual([])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'attach:1' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Needs a terminal: press Attach/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('in herdr a command that needs a terminal is typed into a pane beside Claude Code, and the Run pane says so', async ($, on) => {
+  const machine = machineOf({ env: HERDR, settings: '{}', screen: cmd => ({ text: `${PROMPT} ${cmd}\n`, isBusy: true }) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  expect((await gt($, 'less log.txt')).text).toContain('(in a herdr pane beside Claude Code)')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /in a terminal pane/ })).toBeDefined()
+  // The pane is already beside Claude Code: nothing to attach to.
+  expect(await ui.find({ key: 'attach:1' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('"interactive" in run-pane.json adds commands that get a terminal', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, settings: '{"interactive":["mytui"]}', screen: finishing() })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'mytui --go')
+  await gt($, 'othertool')
+
+  expect(machine.calls.some(argv => argv.includes('send-keys') && argv.includes('mytui --go'))).toBe(true)
+  expect(machine.spawned).toHaveLength(1)
+})
+
+test('what a full-screen program shows is the run output while it holds the screen, and the command output once it is over', async ($, on) => {
+  let isQuit = false
+  const machine = machineOf({
+    hasTmux: true,
+    settings: '{}',
+    screen: (cmd, reads) => {
+      if (isQuit) return { text: `${PROMPT} ${cmd}\n${PROMPT} `, isBusy: false }
+      // Typed and echoed, then the editor takes the screen: the command line is no longer on it.
+      return reads < 2 ? { text: `${PROMPT} ${cmd}\n`, isBusy: true } : { text: 'line one of the file\n~\n~\n-- INSERT --\n', isBusy: true }
+    },
+  })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'vi notes.txt')
+
+  const read = async () => String((await $.tool.call({ tool: 'mcp__run-pane__run_output' })).result)
+  for (let tick = 0; tick < 400 && !(await read()).includes('-- INSERT --'); tick++) await new Promise<void>(resolve => setTimeout(resolve, 5))
+  expect(await read()).toContain('-- INSERT --')
+  expect(await read()).toContain('(running)')
+  isQuit = true
+  await untilOver($)
+  expect(await read()).toContain('(done)')
+  expect(await read()).not.toContain('-- INSERT --')
 })

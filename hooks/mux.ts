@@ -321,3 +321,11 @@ export function readPane(shown: string, cmd: string, isOver: boolean): string {
   while (out.length > 0 && out[out.length - 1] === '') out.pop()
   return out.join('\n')
 }
+
+/** What a pane shows while a program holds its whole screen (an editor, a pager): the last `rows` rows, as they are,
+ * with the empty ones below dropped. */
+export function screenText(shown: string, rows: number): string {
+  const lines = screenLines(shown)
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return lines.slice(Math.max(0, lines.length - rows)).join('\n')
+}

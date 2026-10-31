@@ -1,20 +1,24 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import { candidatePaths, findLinks, isStyled, spansOf } from './ansi'
+import type { Span } from './ansi'
 import {
   descendants,
   highlight,
+  isInteractive,
   matchesAny,
   MAX_LINES,
   readPid,
   RunLog,
   statusMark,
+  stripAnsi,
   statusWords,
   suggestions,
   WRAPPER,
 } from './run'
-import type { PartKind, RunStatus } from './run'
-import { detectMux, driver, echoes, HIDDEN_ALIVE, HIDDEN_ATTACH, HIDDEN_SOCKET, isTmuxPane, itermSessionId, readPane, selectArgv, TMUX_VERSION } from './mux'
+import type { LogLine, PartKind, RunStatus } from './run'
+import { detectMux, driver, echoes, HIDDEN_ALIVE, HIDDEN_ATTACH, HIDDEN_SOCKET, isTmuxPane, itermSessionId, readPane, screenText, selectArgv, TMUX_VERSION } from './mux'
 import type { Mux } from './mux'
 import { hasControls, ITERM_PATH, lineArgv, NOT_MACOS, oneLine, osascriptArgv, osascriptFailure, pickApp } from './shell'
 import type { TerminalApp } from './shell'
@@ -41,6 +45,8 @@ type Run = {
   code: number | null
   log: RunLog
   pid?: number
+  // The command needs a terminal (an editor, a pager, a prompt): it runs in one, and the pane follows it.
+  isInteractive?: boolean
   // Set when the command runs in a pane of the person's multiplexer instead of a process of this mod.
   mux?: Mux
   pane?: string
@@ -105,7 +111,12 @@ function showStatus($: EngineInterface): void {
 // hooks/run-pane.json is optional and meant for whoever bundles the mod: `suggestions` (commands to
 // suggest first), `openFor` (words that make the pane open by itself) and `multiplexer` (false keeps
 // the commands out of herdr and tmux panes). Without it, the defaults.
-type Settings = { suggestions?: unknown; openFor?: unknown; multiplexer?: unknown }
+//
+// `interactive` adds first words to what is told to need a terminal (`["mytui"]`); `panes: "all"` gives every
+// command a terminal, as 0.3 did, instead of only those.
+type Settings = { suggestions?: unknown; openFor?: unknown; multiplexer?: unknown; interactive?: unknown; panes?: unknown }
+
+const wordsOf = (value: unknown): string[] => (Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '') : [])
 
 async function settings($: EngineInterface): Promise<Settings> {
   try {
@@ -238,6 +249,8 @@ async function terminalApp($: EngineInterface): Promise<TerminalApp> {
 
 const MUX_MS = 5_000
 const GONE_POLLS = 3
+// The rows of a full-screen program the pane keeps.
+const SCREEN_ROWS = 50
 
 // What the person types to look into the hidden terminals (and what /rp says where no window can be opened).
 
@@ -402,8 +415,16 @@ async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Prom
       // its prompt again; the shell's own exit code is not something a pane tells.
       const isTyped = echoes(shown.stdout, run.cmd) > before
       const isOver = isTyped && (await isIdle($, mux, id))
-      // Once over, the prompt that follows the output has been drawn: read again, so it is not output.
-      const text = isOver ? readPane((await paneText($, mux, id)) || shown.stdout, run.cmd, true) : isTyped ? readPane(shown.stdout, run.cmd, false) : ''
+      // Once over, the prompt that follows the output has been drawn: read again, so it is not output. A command that
+      // has been typed and is gone from the screen holds the whole of it (an editor, a pager, at once: the poll may
+      // never see its line): what it shows is its output.
+      const text = isOver
+        ? readPane((await paneText($, mux, id)) || shown.stdout, run.cmd, true)
+        : isTyped
+          ? readPane(shown.stdout, run.cmd, false)
+          : run.isInteractive
+            ? screenText(shown.stdout, SCREEN_ROWS)
+            : ''
       if (text !== last) {
         last = text
         run.log.clear()
@@ -432,15 +453,21 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
   const stopped = new Promise<'stop'>(resolve => {
     run.release = () => resolve('stop')
   })
+  // A command that needs a terminal gets one (an editor, a pager, a prompt: a pipe cannot do for them); every other
+  // is a process of the mod, whose output the pane draws itself, with its colours and links.
+  const config = await settings($)
+  run.isInteractive = config.panes === 'all' || isInteractive(cmd, wordsOf(config.interactive))
   // One line, as typed at a prompt: a command of several lines would be run line by line.
-  if (!cmd.includes('\n')) {
+  if (run.isInteractive && !cmd.includes('\n')) {
     // The person's multiplexer or iTerm2 first; failing that (or with neither), the hidden tmux server.
     const mux = await findMux($)
     if (mux && (await startInPane($, run, mux, stopped))) return run
     if ((!mux || mux === 'iterm') && (await canHide($)) && (await startInPane($, run, 'hidden', stopped))) return run
+    run.log.push('(no terminal to give it here: tmux, herdr or iTerm2 would, so it runs without one and cannot be typed to)\n')
   }
   void (async () => {
-    const stream = $.process.spawn({ argv: ['sh', '-c', WRAPPER, 'sh', cmd], cwd: run.cwd })
+    // Tools that colour only for a terminal are asked to anyway: the pane draws the colours.
+    const stream = $.process.spawn({ argv: ['sh', '-c', WRAPPER, 'sh', cmd], cwd: run.cwd, env: { FORCE_COLOR: '1', CLICOLOR_FORCE: '1' } })
     const it = stream[Symbol.asyncIterator]()
     let head: string | undefined = ''
     try {
@@ -521,19 +548,86 @@ async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean
     await $.ui.close({ id: PANE })
     return 'Run pane closed. Commands keep running; /rp shows them again.'
   }
-  // In a multiplexer pane the command is in front of the person already: the Run pane stays shut, and
-  // /rp alone opens it. The reply is the command as `! cmd` shows it, no more. If no pane could be made the run is a process of this mod, and the pane shows it.
+  // The Run pane shows every run: a process of this mod draws its output there, and one in a terminal pane is followed.
   const run = cmd === '' ? undefined : await start($, cmd)
-  if (run?.mux && run.mux !== 'hidden') return `$ ${cmd}`
   const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true, columns: DOCK_COLUMNS })
   showStatus($)
   // Docked beside the transcript only in the fullscreen layout; otherwise it sits above the prompt.
   const hint = placed.isPlaced && !isFullscreen ? ` ${DOCK_HINT}` : ''
   if (cmd === '') return placed.isPlaced ? `Run pane opened.${hint}` : 'The Run pane needs a wider terminal (about 110 columns) or the flicker-free display mode (CLAUDE_CODE_NO_FLICKER=1 claude).'
-  return `Started #${run?.id}: ${cmd}${placed.isPlaced ? hint : ' (the Run pane needs a wider terminal to show it)'}`
+  const where = run?.mux === 'hidden' ? ' (needs a terminal: press Attach in the Run pane)' : run?.mux ? ` (in ${run.mux === 'iterm' ? 'an iTerm2' : `a ${run.mux}`} pane beside Claude Code)` : ''
+  return `Started #${run?.id}: ${cmd}${where}${placed.isPlaced ? hint : ' (the Run pane needs a wider terminal to show it)'}`
 }
 
 const open = (id: number): Run | undefined => runs.find(run => run.id === id)
+
+// Paths of the output that are files, asked once each: where a path is resolved from is the run's folder.
+const known = new Map<string, boolean>()
+let opener: Promise<string | undefined> | undefined
+
+const resolveFile = (cwd: string, path: string, home: string | undefined): string =>
+  path.startsWith('/') ? path : path.startsWith('~/') ? `${home ?? ''}${path.slice(1)}` : `${cwd}/${path.replace(/^\.\//, '')}`
+
+// What opens a URL or a file on this machine, from the system's own name: `open` on macOS, `xdg-open` elsewhere.
+function openerOf($: EngineInterface): Promise<string | undefined> {
+  opener ??= $.process.run(['uname', '-s'], { timeoutMs: 3_000 }).then(
+    ran => (ran.stdout.trim() === 'Darwin' ? 'open' : ran.stdout.trim() === 'Linux' ? 'xdg-open' : undefined),
+    () => undefined,
+  )
+  return opener
+}
+
+// A press on a link in the output: a URL goes to the browser, a file to what the system opens it with. The target is
+// an argument, never part of a shell line; a URL is only ever http or https, and a file only a path that exists.
+async function openLink($: EngineInterface, run: Run, link: { kind: 'url' | 'file'; target: string }): Promise<void> {
+  try {
+    const tool = await openerOf($)
+    if (!tool) return void $.ui.toast(`Cannot open ${link.target} on this system.`)
+    const target = link.kind === 'url' ? link.target : resolveFile(run.cwd, link.target, await envOf($.env.get('HOME')))
+    const ran = await $.process.run([tool, target], { timeoutMs: 10_000 })
+    if (ran.exitCode !== 0) $.ui.toast(`Could not open ${link.target}: ${oneLine(ran.stderr || ran.stdout) || `${tool} exited with ${ran.exitCode}`}`)
+  } catch (error) {
+    $.ui.toast(`Could not open ${link.target}: ${oneLine(error instanceof Error ? error.message : String(error))}`)
+  }
+}
+
+// Looks up the paths in some lines of output that are files, so they can be links.
+async function lookUp($: EngineInterface, run: Run, texts: readonly string[]): Promise<void> {
+  const home = await envOf($.env.get('HOME'))
+  const wanted = new Set<string>()
+  for (const text of texts) for (const path of candidatePaths(text)) wanted.add(resolveFile(run.cwd, path, home))
+  await Promise.all(
+    [...wanted].filter(path => !known.has(path)).map(async path => known.set(path, await $.fs.exists(path).catch(() => false))),
+  )
+}
+
+// What a part of a line is drawn with: the colours and styles it carries, or its theme colours.
+type TextStyle = { color?: string; backgroundColor?: string; bold?: true; dimColor?: true; italic?: true; underline?: true; strikethrough?: true; inverse?: true }
+
+function textStyle(span: Span): TextStyle {
+  return {
+    ...(span.fg ? { color: span.fg } : {}),
+    ...(span.bg ? { backgroundColor: span.bg } : {}),
+    ...(span.bold ? { bold: true as const } : {}),
+    ...(span.dim ? { dimColor: true as const } : {}),
+    ...(span.italic ? { italic: true as const } : {}),
+    ...(span.underline ? { underline: true as const } : {}),
+    ...(span.strike ? { strikethrough: true as const } : {}),
+    ...(span.inverse ? { inverse: true as const } : {}),
+  }
+}
+
+// A line that no sequence styles (a reset alone is none) is coloured by what it looks like (a banner, an error, a
+// note); one that is styled says how it is drawn itself, and is left to.
+function lineSpans({ text, start }: LogLine): Span[] {
+  const spans = spansOf(text, start)
+  if (spans.some(isStyled)) return spans
+  return highlight(spans.map(span => span.text).join('')).map(part => {
+    if (part.kind === 'plain' || part.kind === 'url') return { text: part.text }
+    const style = STYLE[part.kind]
+    return { text: part.text, ...(style.color ? { fg: style.color } : {}), ...(style.bold ? { bold: true } : {}), ...(style.dimColor ? { dim: true } : {}) }
+  })
+}
 
 export const register: Register = on => {
 
@@ -641,8 +735,46 @@ export const register: Register = on => {
     back = Math.min(back, newest)
     // The lines ending `back` before the newest, newest first: drawn from the bottom up, so what
     // does not fit is cut at the top.
-    const all = picked?.log.tail(MAX_LINES) ?? []
-    const output = all.slice(Math.max(0, all.length - back - rows), all.length - back).reverse()
+    const all = picked?.log.styled(MAX_LINES) ?? []
+    const firstShown = Math.max(0, all.length - back - rows)
+    const shown = all.slice(firstShown, all.length - back)
+    // Which of the paths in the lines on show are files: looked up before the lines are drawn, once for each.
+    if (picked) await lookUp($, picked, shown.map(line => stripAnsi(line.text)))
+    const homeDir = await envOf($.env.get('HOME'))
+    const isFile = (path: string): boolean => picked !== undefined && known.get(resolveFile(picked.cwd, path, homeDir)) === true
+    const output = shown.map((line, at) => ({ line, at: (picked?.log.first ?? 0) + firstShown + at })).reverse()
+
+    // One line of the output: its colours and styles, and its URLs and files as presses that open them.
+    const drawLine = ({ line, at }: { line: LogLine; at: number }): JSX.Element => {
+      if (line.text === '') return <Text> </Text>
+      const pieces = lineSpans(line).flatMap(span => findLinks(span.text, isFile).map(piece => ({ ...piece, span })))
+      if (!pieces.some(piece => piece.link)) {
+        return (
+          <Text wrap="truncate-end">
+            {pieces.map(piece => (Object.keys(piece.span).length > 1 ? <Text {...textStyle(piece.span)}>{piece.text}</Text> : piece.text))}
+          </Text>
+        )
+      }
+      return (
+        <Box>
+          {pieces.map((piece, n) => {
+            const style = textStyle(piece.span)
+            const { link } = piece
+            return link ? (
+              <Button plain key={`link:${picked?.id}:${at}:${n}`} onPress={() => void openLink($, picked as Run, link)}>
+                <Text {...style} color={style.color ?? 'suggestion'} underline>
+                  {piece.text}
+                </Text>
+              </Button>
+            ) : (
+              <Text {...style} wrap="truncate-end">
+                {piece.text}
+              </Text>
+            )
+          })}
+        </Box>
+      )
+    }
 
     const toolbar = (): JSX.Element => (
       <Box flexWrap="wrap" columnGap={1} flexShrink={0}>
@@ -695,9 +827,6 @@ export const register: Register = on => {
             $.ui.invalidate('ui.render')
           }}
         />
-        {picked?.mux === 'hidden' && picked.status === 'running' && (
-          <Button key={`attach:${picked.id}`} label="Attach" onPress={() => void attach($, picked).then(text => $.ui.toast(text))} />
-        )}
         <Button key={`shell`} label="Shell" onPress={() => void openShell($).then(text => $.ui.toast(text))} />
         <Button key={`close`} label="Close pane" onPress={() => void $.ui.close({ id: PANE })} />
       </Box>
@@ -746,6 +875,10 @@ export const register: Register = on => {
               onPress={() => void update($, selected, () => run.id)}
             />
             <Text dimColor> {run.isStopping && run.status === 'running' ? 'stopping\u2026' : statusWords(run.status, run.code)}</Text>
+            {run.mux === 'hidden' && run.status === 'running' && (
+              <Button key={`attach:${run.id}`} label="Attach" onPress={() => void attach($, run).then(text => $.ui.toast(text))} />
+            )}
+            {run.isInteractive && run.mux && run.mux !== 'hidden' && run.status === 'running' && <Text dimColor> in a terminal pane</Text>}
           </Box>
         ))}
         </Box>
@@ -754,28 +887,12 @@ export const register: Register = on => {
             <Text dimColor wrap="truncate-end">
               #{picked.id} output ({picked.log.size} lines{back > 0 ? `, ${back} back` : ''})
             </Text>
-            {picked.mux === 'hidden' && picked.status === 'running' && <Text dimColor>In a hidden terminal: Attach to type into it (an editor, a prompt).</Text>}
+            {picked.mux === 'hidden' && picked.status === 'running' && <Text dimColor>Needs a terminal: press Attach (next to the run above) to type into it.</Text>}
             <Box flexDirection="column-reverse" flexGrow={1} flexShrink={1} overflow="hidden">
             {/* First, so at the bottom: it takes the room the lines leave, which keeps a short output at the top. */}
             <Box flexGrow={1} />
             {picked.log.size === 0 && <Text dimColor>No output yet.</Text>}
-            {output.map(line => (
-              <Text wrap="truncate-end">
-                {line === ''
-                  ? ' '
-                  : highlight(line).map(part =>
-                      part.kind === 'url' ? (
-                        <Text color="suggestion" underline>
-                          {part.text}
-                        </Text>
-                      ) : part.kind === 'plain' ? (
-                        part.text
-                      ) : (
-                        <Text {...STYLE[part.kind]}>{part.text}</Text>
-                      ),
-                    )}
-              </Text>
-            ))}
+            {output.map(drawLine)}
             </Box>
           </Box>
         )}

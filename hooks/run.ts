@@ -1,6 +1,9 @@
 // The Run pane's logic with no engine in it: what a command prints, which commands to suggest
 // and which processes belong to a run.
 
+import { styleAfter } from './ansi'
+import type { Style } from './ansi'
+
 export const MAX_LINES = 2000
 export const MAX_SUGGESTIONS = 10
 /** What the wrapper prints first, so the mod knows the shell's pid to stop the whole tree by. */
@@ -11,39 +14,125 @@ export const WRAPPER = `printf '${PID_MARKER}%s\\n' "$$" >&2; exec sh -lc "$1"`
 
 // CSI sequences, OSC sequences (title, hyperlinks) and the two-byte escapes.
 const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g
-const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g
+// What a log has no use for: every sequence but the ones that set colours and styles (`ESC [ ... m`).
+const NOT_SGR = /\u001b\[[0-9;?]*[ -/]*[@-ln-~]|\u001b\[[0-9;?]*[ -/]+m|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g
+const STRAY_ESC = /\u001b(?!\[[0-9;:]*m)/g
+// Control characters but ESC, which the sequences kept above start with.
+const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001a\u001c-\u001f\u007f-\u009f]/g
 
 export const stripAnsi = (text: string): string => text.replace(ANSI, '')
 
 /** A progress bar redraws its line with `\r`: only what is left after the last one shows. */
 const afterReturn = (line: string): string => line.slice(line.lastIndexOf('\r') + 1).replace(CONTROLS, '')
 
-/** The last `MAX_LINES` lines a command printed, held as text arrives in pieces. */
+/** A line of output as the log keeps it: its text with its colour sequences, and the style it starts in. */
+export type LogLine = { text: string; start: Style }
+
+/** The last `MAX_LINES` lines a command printed, held as text arrives in pieces. Colours and styles are kept
+ * (a line carries the style the one before left on), every other sequence is dropped. */
 export class RunLog {
-  private lines: string[] = []
+  private lines: LogLine[] = []
   private partial = ''
+  // The style at the end of the last whole line: where the next one starts.
+  private style: Style = {}
+  // How many lines went off the top, so a line has a number that does not change as new ones arrive.
+  private gone = 0
 
   push(text: string): void {
-    const parts = (this.partial + stripAnsi(text)).split('\n')
+    const parts = (this.partial + text.replace(NOT_SGR, '').replace(STRAY_ESC, '')).split('\n')
     this.partial = parts.pop() ?? ''
-    for (const part of parts) this.lines.push(afterReturn(part))
-    if (this.lines.length > MAX_LINES) this.lines.splice(0, this.lines.length - MAX_LINES)
+    for (const part of parts) {
+      this.lines.push({ text: afterReturn(part), start: this.style })
+      this.style = styleAfter(part, this.style)
+    }
+    if (this.lines.length > MAX_LINES) {
+      this.gone += this.lines.length - MAX_LINES
+      this.lines.splice(0, this.lines.length - MAX_LINES)
+    }
   }
 
   get size(): number {
     return this.lines.length + (this.partial ? 1 : 0)
   }
 
-  /** The last `count` lines, an unfinished one included. */
+  /** How many lines went off the top: the number of the first line held. */
+  get first(): number {
+    return this.gone
+  }
+
+  private all(): LogLine[] {
+    return this.partial ? [...this.lines, { text: afterReturn(this.partial), start: this.style }] : this.lines
+  }
+
+  /** The last `count` lines as plain text, an unfinished one included: what is said, not how it is drawn. */
   tail(count: number): string[] {
-    const all = this.partial ? [...this.lines, afterReturn(this.partial)] : this.lines
+    return this.styled(count).map(line => stripAnsi(line.text))
+  }
+
+  /** The same, with the colours and styles. */
+  styled(count: number): LogLine[] {
+    const all = this.all()
     return count >= all.length ? [...all] : all.slice(all.length - count)
   }
 
   clear(): void {
     this.lines = []
     this.partial = ''
+    this.style = {}
+    this.gone = 0
   }
+}
+
+// Commands that take over the terminal or wait for the person at it, which a pipe cannot give them.
+const ALWAYS = new Set([
+  // editors
+  'vi', 'vim', 'nvim', 'view', 'vimdiff', 'nano', 'pico', 'emacs', 'micro', 'helix', 'hx', 'ed', 'ex', 'joe', 'kak', 'code-tunnel',
+  // pagers and manuals
+  'less', 'more', 'most', 'man', 'info',
+  // monitors
+  'top', 'htop', 'btop', 'atop', 'glances', 'nmon', 'iotop', 'nload', 'iftop', 'watch', 'ncdu', 'k9s', 'lazygit', 'lazydocker', 'tig', 'mc', 'ranger', 'nnn', 'fzf',
+  // shells and sessions
+  'tmux', 'screen', 'ssh', 'mosh', 'telnet', 'ftp', 'sftp', 'nc', 'login', 'su', 'passwd',
+])
+// Read-eval-print loops: interactive with no script or file to run, a command like any other with one.
+const REPLS = new Set(['sh', 'bash', 'zsh', 'fish', 'python', 'python3', 'node', 'deno', 'bun', 'irb', 'pry', 'ipython', 'psql', 'mysql', 'sqlite3', 'redis-cli', 'mongosh', 'lua', 'ghci', 'clj', 'sbcl', 'php', 'ruby', 'perl', 'swift', 'scala', 'jshell', 'R'])
+// Words that start a command without being it.
+const WRAPPERS = new Set(['sudo', 'env', 'time', 'nice', 'nohup', 'command', 'exec', 'builtin', 'xargs', 'doas', 'caffeinate'])
+
+/** Whether a command needs a terminal of its own: an editor, a pager, a monitor, a shell, a REPL, a container
+ * entered with `-it`, an editor `git` opens. `extra` is what `interactive` in hooks/run-pane.json adds (first words). */
+export function isInteractive(cmd: string, extra: readonly string[] = []): boolean {
+  // Each command of a list or a pipeline: `git log | less`, `cd app && vim x`.
+  for (const segment of cmd.split(/&&|\|\||[;|&\n]/)) {
+    const words = segment.trim().split(/\s+/).filter(Boolean)
+    // Assignments (`EDITOR=vi git ...`), then wrappers (`sudo -u x vim`, whose options and their values are skipped).
+    let at = 0
+    while (at < words.length && /^[A-Za-z_]\w*=/.test(words[at] as string)) at++
+    while (at < words.length && WRAPPERS.has(words[at] as string)) {
+      const wrapper = words[at] as string
+      at++
+      while (at < words.length && (words[at] as string).startsWith('-')) {
+        // `sudo -u bob vim`: these options take a value of their own.
+        at += (wrapper === 'sudo' || wrapper === 'doas') && /^-[ughpCrtU]$/.test(words[at] as string) ? 2 : 1
+      }
+    }
+    const name = (words[at] ?? '').split('/').pop() ?? ''
+    if (name === '') continue
+    const args = words.slice(at + 1)
+    if (ALWAYS.has(name) || extra.includes(name)) return true
+    const operands = args.filter(arg => !arg.startsWith('-'))
+    if (REPLS.has(name) && operands.length === 0) return true
+    if (['docker', 'podman', 'kubectl', 'oc', 'nerdctl'].includes(name) && /^(exec|run|attach)$/.test(operands[0] ?? '') && args.some(arg => /^-[a-zA-Z]*(it|ti)[a-zA-Z]*$/.test(arg) || arg === '--tty' || arg === '-t')) return true
+    if (name === 'git') {
+      const verb = operands[0]
+      const has = (...flags: string[]): boolean => args.some(arg => flags.some(flag => arg === flag || arg.startsWith(`${flag}=`)))
+      if (verb === 'rebase' && has('-i', '--interactive')) return true
+      if (verb === 'add' && has('-p', '--patch', '-i', '--interactive')) return true
+      // A commit with no message given opens the editor.
+      if (verb === 'commit' && !has('-m', '--message', '-F', '--file', '-C', '--reuse-message', '--no-edit', '--dry-run')) return true
+    }
+  }
+  return false
 }
 
 const PREFERRED = ['dev', 'start', 'serve', 'watch', 'test', 'build', 'lint']

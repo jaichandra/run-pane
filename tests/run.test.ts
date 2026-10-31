@@ -4,6 +4,7 @@ import {
   descendants,
   highlight,
   isAtBottom,
+  isInteractive,
   makeTargets,
   matchesAny,
   MAX_LINES,
@@ -151,4 +152,46 @@ test('the window is at the bottom when it ends on the last rows or the tree fits
   expect(isAtBottom({ offset: 79, bodyRows: 20, contentRows: 100 })).toBe(false)
   expect(isAtBottom({ offset: 0, bodyRows: 20, contentRows: 100 })).toBe(false)
   expect(isAtBottom({ offset: 0, bodyRows: 20, contentRows: 12 })).toBe(true)
+})
+
+test('a log keeps the colours of its lines, drops every other sequence, and the plain tail has none', () => {
+  const log = new RunLog()
+  log.push('\u001b[31mfailed\u001b[0m ok\u001b[2K\u001b[1G\u001b]0;title\u0007\u001b[?25l\n')
+  expect(log.styled(5)).toEqual([{ text: '\u001b[31mfailed\u001b[0m ok', start: {} }])
+  expect(log.tail(5)).toEqual(['failed ok'])
+  // A stray escape and the other control characters are gone.
+  log.push('a\u001bb\u0007c\n')
+  expect(log.tail(5)).toEqual(['failed ok', 'abc'])
+})
+
+test('a style runs on into the next lines until it is reset, and a progress bar keeps its last state', () => {
+  const log = new RunLog()
+  log.push('\u001b[33;1mwarning\nthe next line\n\u001b[0mplain\nstill plain\n')
+  expect(log.styled(9).map(line => line.start)).toEqual([{}, { fg: 'yellow', bold: true }, { fg: 'yellow', bold: true }, {}])
+  const bar = new RunLog()
+  bar.push('10%\r50%\r\u001b[32m100%\u001b[0m\n')
+  expect(bar.tail(2)).toEqual(['100%'])
+})
+
+test('lines have a number that does not change when the oldest go off the top', () => {
+  const log = new RunLog()
+  expect(log.first).toBe(0)
+  log.push(`${Array.from({ length: MAX_LINES + 5 }, (_, at) => `line ${at}`).join('\n')}\n`)
+  expect(log.first).toBe(5)
+  expect(log.tail(1)).toEqual([`line ${MAX_LINES + 4}`])
+  log.clear()
+  expect(log.first).toBe(0)
+  expect(log.size).toBe(0)
+})
+
+test('editors, pagers, monitors, sessions and REPLs need a terminal; builds, tests and scripts do not', () => {
+  for (const cmd of ['vi notes.txt', 'vim', 'nvim -d a b', 'nano x', 'less log.txt', 'man ls', 'top', 'htop', 'watch ls', 'ssh host', 'tmux', 'k9s', 'python', 'python3 -i', 'node', 'psql', 'bash', 'sudo vim /etc/hosts', 'sudo -u bob vim x', 'EDITOR=vi vim x', '/usr/bin/vim x', 'git log | less', 'cd app && nvim x', 'docker exec -it web sh', 'kubectl exec -ti pod -- bash', 'podman run -it alpine', 'git rebase -i HEAD~3', 'git add -p', 'git commit']) {
+    expect(isInteractive(cmd), cmd).toBe(true)
+  }
+  for (const cmd of ['npm test', 'ls -al', 'python script.py', 'node server.js', 'bash run.sh', 'git commit -m x', 'git commit --no-edit', 'git status', 'git log', 'docker run web', 'docker exec web ls', 'make dev', 'cat a | grep vi', 'echo vim', 'cargo run', 'psql -c "select 1"', 'ssh-keygen -t ed25519', 'vimeo-dl x', 'viewer x', 'sleep 1; echo done', '']) {
+    expect(isInteractive(cmd), cmd).toBe(false)
+  }
+  // What hooks/run-pane.json lists is told too, by first word.
+  expect(isInteractive('mytui --x', ['mytui'])).toBe(true)
+  expect(isInteractive('mytui --x')).toBe(false)
 })
