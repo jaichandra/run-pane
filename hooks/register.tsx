@@ -116,9 +116,13 @@ function showStatus($: EngineInterface): void {
 // suggest first), `openFor` (words that make the pane open by itself) and `multiplexer` (false keeps
 // the commands out of herdr and tmux panes). Without it, the defaults.
 //
+// `forceColor: true` asks every command to colour its output (`FORCE_COLOR=1`), which a pipe would not get; it is off
+// because a script that reads its own tools' output for a phrase (`compiled successfully`) no longer finds it once that
+// is coloured.
+//
 // `interactive` adds first words to what is told to need a terminal (`["mytui"]`); `panes: "all"` gives every
 // command a terminal, as 0.3 did, instead of only those.
-type Settings = { suggestions?: unknown; openFor?: unknown; multiplexer?: unknown; interactive?: unknown; panes?: unknown }
+type Settings = { suggestions?: unknown; openFor?: unknown; multiplexer?: unknown; interactive?: unknown; panes?: unknown; forceColor?: unknown }
 
 const wordsOf = (value: unknown): string[] => (Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string' && one.trim() !== '') : [])
 
@@ -500,8 +504,13 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
     run.log.push('(no terminal to give it here: tmux, herdr or iTerm2 would, so it runs without one and cannot be typed to)\n')
   }
   void (async () => {
-    // Tools that colour only for a terminal are asked to anyway: the pane draws the colours.
-    const stream = $.process.spawn({ argv: ['sh', '-c', WRAPPER, 'sh', cmd], cwd: run.cwd, env: { FORCE_COLOR: '1', CLICOLOR_FORCE: '1' } })
+    // Tools that colour only for a terminal are asked to anyway only when the person says so (`forceColor`): the
+    // pane draws the colours it is given, but a command's own output is what other tools read.
+    const stream = $.process.spawn({
+      argv: ['sh', '-c', WRAPPER, 'sh', cmd],
+      cwd: run.cwd,
+      ...(config.forceColor === true ? { env: { FORCE_COLOR: '1', CLICOLOR_FORCE: '1' } } : {}),
+    })
     const it = stream[Symbol.asyncIterator]()
     let head: string | undefined = ''
     try {

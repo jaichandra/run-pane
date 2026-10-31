@@ -306,7 +306,7 @@ async function partOf(ui: { find: (query: never) => Promise<unknown> }, line: Re
   return (part as { props?: Record<string, unknown> } | undefined)?.props
 }
 
-test('a command is a process of the mod, asked to colour its output, and its colours are drawn', async ($, on) => {
+test('a command is a process of the mod, run as it is (no colour forced), and the colours it prints are drawn', async ($, on) => {
   const process = {
     calls: [] as string[][],
     spawns: [] as { argv: readonly string[]; env?: Record<string, string> | undefined }[],
@@ -317,9 +317,10 @@ test('a command is a process of the mod, asked to colour its output, and its col
   await gt($, 'npm test')
   await untilPrinted($, 'note')
 
-  // No terminal for it, and the colour that tools keep for a terminal is asked for.
+  // No terminal for it, and no change to the environment it runs in: a script may read its tools' output for a
+  // phrase (`compiled successfully`), which colour would break.
   expect(process.calls.some(argv => argv[0] === 'tmux')).toBe(false)
-  expect(process.spawns[0]?.env).toEqual({ FORCE_COLOR: '1', CLICOLOR_FORCE: '1' })
+  expect(process.spawns[0]?.env).toBeUndefined()
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await partOf(ui, /failed/, 'failed'))?.color).toBe('red')
   const ok = await partOf(ui, /failed/, 'ok')
@@ -487,4 +488,25 @@ test('a pane that has a lot of output draws it, whatever the lines say', async (
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /the very last line/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('"forceColor" in run-pane.json asks the commands to colour their output', async ($, on) => {
+  const process = { calls: [] as string[][], spawns: [] as { argv: readonly string[]; env?: Record<string, string> | undefined }[], lines: ['ready\n'] }
+  engine(on, process, { 'run-pane.json': '{"forceColor":true}', 'package.json': '{}' })
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+
+  expect(process.spawns[0]?.env).toEqual({ FORCE_COLOR: '1', CLICOLOR_FORCE: '1' })
+})
+
+test('the output a script reads for a phrase reaches the pane as the command wrote it', async ($, on) => {
+  // The sandbox's awk gate looks for `compiled successfully` in the output it is piped: the pane must not change it.
+  const process = { calls: [] as string[][], spawns: [] as { argv: readonly string[]; env?: Record<string, string> | undefined }[], lines: ['webpack compiled successfully in 12 ms\n'] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'sandbox start ci')
+  await untilPrinted($, 'compiled successfully')
+
+  expect(process.spawns[0]?.argv.slice(-1)).toEqual(['sandbox start ci'])
+  expect(process.spawns[0]?.env).toBeUndefined()
 })
