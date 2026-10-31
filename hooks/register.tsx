@@ -318,6 +318,23 @@ async function splitPane($: EngineInterface, mux: Mux, cwd: string): Promise<str
   return id
 }
 
+// A pane just made has a shell that is still starting: a line typed before its prompt shows up as the
+// terminal's own echo, which would be taken for the command, and the shell reads as idle at once. So wait
+// until the pane shows something, the same on two looks, with the shell at its prompt (a quarter second
+// apart, five seconds at most: a shell that never settles gets the command anyway).
+const READY_MS = 250
+const READY_POLLS = 20
+
+async function waitForPrompt($: EngineInterface, mux: Mux, pane: string): Promise<void> {
+  let before: string | undefined
+  for (let at = 0; at < READY_POLLS; at++) {
+    await $.clock.sleep(READY_MS)
+    const text = await paneText($, mux, pane)
+    if (text.trim() !== '' && text === before && (await isIdle($, mux, pane))) return
+    before = text
+  }
+}
+
 // Runs the command in a pane of the multiplexer and follows what the pane shows. False when no pane could
 // be made or typed into, so the run can go on as a process of this mod instead.
 async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Promise<'stop'>): Promise<boolean> {
@@ -326,7 +343,11 @@ async function startInPane($: EngineInterface, run: Run, mux: Mux, stopped: Prom
   let before = 0
   try {
     // A pane with nothing running in it is used again; only a busy one (or none) is a reason for a new one.
-    pane = (await idlePane($, mux, run)) ?? (await splitPane($, mux, run.cwd))
+    pane = await idlePane($, mux, run)
+    if (!pane) {
+      pane = await splitPane($, mux, run.cwd)
+      if (pane) await waitForPrompt($, mux, pane)
+    }
     if (!pane) return false
     // What the pane showed before: the command typed again must show up as one more line than this.
     before = echoes(await paneText($, mux, pane), run.cmd)

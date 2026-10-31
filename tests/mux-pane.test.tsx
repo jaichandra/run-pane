@@ -151,6 +151,16 @@ async function until(isMet: () => boolean): Promise<void> {
   for (let tick = 0; tick < 500 && !isMet(); tick++) await new Promise<void>(resolve => setTimeout(resolve, 5))
 }
 
+// A run reads over once the tool says so: the poll that ends it runs on a clock of its own, so a test that
+// looks at the pane right after /rp would race it.
+async function untilOver($: Parameters<Parameters<typeof test>[1]>[0]): Promise<void> {
+  for (let tick = 0; tick < 500; tick++) {
+    const got = await $.tool.call({ tool: 'mcp__run-pane__run_output' })
+    if (/\((done|stopped|exit|killed)/.test(String(got.result))) return
+    await new Promise<void>(resolve => setTimeout(resolve, 5))
+  }
+}
+
 const machineOf = (extra: Partial<Machine> = {}): Machine => ({ env: {}, calls: [], spawned: [], toasts: [], ...extra })
 const HERDR = { HERDR_ENV: '1', HERDR_PANE_ID: 'w1:p0' }
 const TMUX = { TMUX: '/tmp/tmux-1000/default,1,0', TMUX_PANE: '%0' }
@@ -282,6 +292,7 @@ test('Remove closes the finished run pane, and Restart types the command again w
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'npm test')
+  await untilOver($)
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.find({ key: 'restart:1' })
@@ -289,6 +300,7 @@ test('Remove closes the finished run pane, and Restart types the command again w
   await until(() => machine.calls.filter(argv => argv[2] === 'run').length === 2)
   expect(machine.calls.filter(argv => argv[2] === 'split')).toHaveLength(1)
   expect(machine.calls.filter(argv => argv[2] === 'run').map(argv => argv[3])).toEqual(['w1:p1', 'w1:p1'])
+  await untilOver($)
   await ui.find({ key: 'remove:2' })
   await ui.press({ key: 'remove:2' })
   expect(machine.calls).toContainEqual(['herdr', 'pane', 'close', 'w1:p1'])
@@ -432,6 +444,7 @@ test('a /clear keeps the panes, and a pane already closed is not closed twice', 
   engine(on, machine)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'make')
+  await untilOver($)
   await $.session.end(ending('clear'))
   expect(machine.calls.some(argv => argv[1] === 'kill-pane')).toBe(false)
 
@@ -505,6 +518,7 @@ test('without a multiplexer of the person\'s, a command runs in a window of a hi
   expect((await gt($, 'vi notes.txt')).text).toContain('Started #1')
   expect(machine.opened).toEqual(['run'])
   expect(machine.spawned).toEqual([])
+  await untilOver($)
   const split = machine.calls.find(argv => argv[0] === 'sh' && argv[2]?.includes('new-window'))
   expect(split?.slice(3)).toEqual(['sh', '/w/sample-app'])
   expect(split?.[2]).toContain('tmux -L run-pane')
@@ -572,4 +586,17 @@ test('/shell does not use the hidden server: nobody would see that pane', async 
   await $.command.run({ command: 'shell', args: '' })
 
   expect(machine.calls.some(argv => argv[0] === 'tmux')).toBe(false)
+})
+
+test('a pane just made is looked at until its shell has settled before the command is typed into it', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, screen: finishing() })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'vi notes.txt')
+
+  const typedAt = machine.calls.findIndex(argv => argv.includes('-l'))
+  expect(typedAt).toBeGreaterThan(0)
+  // More than the one read that counts the command's earlier echoes: the stub's pane never shows a prompt,
+  // so the wait runs its course and the command is typed anyway.
+  expect(machine.calls.slice(0, typedAt).filter(argv => argv.includes('capture-pane')).length).toBeGreaterThan(2)
 })
