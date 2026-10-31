@@ -31,6 +31,8 @@ type Machine = {
   jobs?: Set<string>
   /** Whether pgrep is missing, so the jobs cannot be told. */
   isPgrepMissing?: boolean
+  /** Whether the hidden tmux server has ended (every shell in it exited). */
+  isHiddenGone?: boolean
   /** Whether tmux is installed, for the hidden terminals used where the person has no multiplexer. */
   hasTmux?: boolean
   /** Whether splitting fails. */
@@ -86,6 +88,7 @@ function engine(on: On, machine: Machine): void {
     const rest = bin === 'tmux' && all[0] === '-L' ? all.slice(2) : all
     if (bin === 'tmux' && rest[0] === '-V') return machine.hasTmux ? done('tmux 3.4\n') : done('', 127, 'tmux: not found')
     if (bin === 'uname') return done('Darwin\n')
+    if (bin === 'tmux' && rest[0] === 'has-session') return machine.isHiddenGone ? done('', 1, 'no server running') : done()
     // The hidden server's windows are made by a script that starts tmux itself.
     if (bin === 'sh' && rest[0] === '-c' && rest[1]?.includes('new-window')) return machine.isSplitBroken ? done('', 1, 'no server') : done(`%${++panes}\n`)
     // iTerm2: its panes are ids, driven by osascript; the read and the idle test are `sh` scripts around it.
@@ -585,7 +588,7 @@ test('a running hidden run has an Attach button that opens a window on the hidde
   await until(() => machine.calls.some(argv => argv[0] === 'osascript'))
   expect(machine.calls).toContainEqual(['tmux', '-L', 'run-pane', 'select-window', '-t', '%1'])
   const window = machine.calls.find(argv => argv[0] === 'osascript')
-  expect(window?.slice(3)).toEqual(['--', 'exec env -u TMUX tmux -L run-pane attach -t run-pane', 'run #1'])
+  expect(window?.slice(3)).toEqual(['--', 'env -u TMUX tmux -L run-pane attach -t run-pane', 'run #1'])
   await ui.unmount()
 })
 
@@ -722,4 +725,20 @@ test('/shell still opens a window in iTerm2, not a pane', async ($, on) => {
 
   expect(machine.calls.some(argv => argv[2]?.includes('split vertically'))).toBe(false)
   expect(machine.calls.some(argv => argv[0] === 'osascript' && argv.includes('/w/sample-app'))).toBe(true)
+})
+
+test('Attach on a hidden terminal that has ended says so and opens no window', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, screen: cmd => ({ text: `${PROMPT} ${cmd}\n`, isBusy: true }) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'vi notes.txt')
+  machine.isHiddenGone = true
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'attach:1' })
+  await until(() => machine.toasts.length > 0)
+  expect(machine.toasts[0]).toContain('The hidden terminal has ended')
+  expect(machine.calls.some(argv => argv[0] === 'osascript')).toBe(false)
+  expect(machine.calls.some(argv => argv.includes('select-window'))).toBe(false)
+  await ui.unmount()
 })

@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { detectMux, driver, echoes, HIDDEN_ATTACH, isTmuxPane, itermSessionId, readPane } from '../hooks/mux'
+import { detectMux, driver, echoes, HIDDEN_ALIVE, HIDDEN_ATTACH, isTmuxPane, itermSessionId, readPane } from '../hooks/mux'
 
 test('herdr is told by HERDR_ENV=1 with a pane, tmux by TMUX with a pane, and herdr wins inside tmux', () => {
   expect(detectMux({ herdrEnv: '1', herdrPane: 'w4:p1' })).toBe('herdr')
@@ -118,7 +118,12 @@ test('the hidden tmux server is the same driver on a socket of its own, with the
   expect(split.slice(3)).toEqual(['sh', "/w/it's $(x)"])
   // The visible tmux is unchanged: no socket.
   expect(driver('tmux').idle('%2')).toEqual(['sh', '-c', expect.any(String), 'sh', '%2'])
-  expect(HIDDEN_ATTACH).toBe('exec env -u TMUX tmux -L run-pane attach -t run-pane')
+  // Not exec'ed: when the attach fails the window must stay, to say why.
+  expect(HIDDEN_ATTACH).toBe('env -u TMUX tmux -L run-pane attach -t run-pane')
+  expect(HIDDEN_ALIVE).toEqual(['tmux', '-L', 'run-pane', 'has-session', '-t', 'run-pane'])
+  // The session starts with a keeper window, so the server outlives the shells of the runs.
+  expect(split[2]).toContain('new-session -d -s run-pane -n keeper')
+  expect(split[2]).toContain('sleep 2147483647')
   expect(isTmuxPane('%12')).toBe(true)
   for (const text of ['', '%', '%1;x', '1', '%1\n', '$(x)']) expect(isTmuxPane(text), text).toBe(false)
 })

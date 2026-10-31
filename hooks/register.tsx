@@ -14,7 +14,7 @@ import {
   WRAPPER,
 } from './run'
 import type { PartKind, RunStatus } from './run'
-import { detectMux, driver, echoes, HIDDEN_ATTACH, HIDDEN_SOCKET, isTmuxPane, itermSessionId, readPane, selectArgv, TMUX_VERSION } from './mux'
+import { detectMux, driver, echoes, HIDDEN_ALIVE, HIDDEN_ATTACH, HIDDEN_SOCKET, isTmuxPane, itermSessionId, readPane, selectArgv, TMUX_VERSION } from './mux'
 import type { Mux } from './mux'
 import { hasControls, ITERM_PATH, lineArgv, NOT_MACOS, oneLine, osascriptArgv } from './shell'
 import type { TerminalApp } from './shell'
@@ -235,14 +235,15 @@ const MUX_MS = 5_000
 const GONE_POLLS = 3
 
 // What the person types to look into the hidden terminals (and what /rp says where no window can be opened).
-const ATTACH_LINE = HIDDEN_ATTACH.replace(/^exec /, '')
 
 // Opens a terminal window on the hidden tmux server, at the run's window, so what is typed there reaches the
 // command: an editor, a prompt. macOS only; elsewhere the line to type is the answer.
 async function attach($: EngineInterface, run: Run): Promise<string> {
-  const way = `Type this in a terminal to attach (Ctrl+B d leaves it): ${ATTACH_LINE}`
+  const way = `Type this in a terminal to attach (Ctrl+B d leaves it): ${HIDDEN_ATTACH}`
   try {
     if (run.mux !== 'hidden' || !run.pane || !isTmuxPane(run.pane)) return 'This run is not in a hidden terminal.'
+    const alive = await $.process.run(HIDDEN_ALIVE, { timeoutMs: MUX_MS }).catch(() => undefined)
+    if (alive?.exitCode !== 0) return `The hidden terminal has ended (its shells were exited, or the session that made it ended): run #${run.id} again with Restart.`
     await $.process.run(selectArgv(run.pane), { timeoutMs: MUX_MS }).catch(() => undefined)
     const system = await $.process.run(['uname', '-s'], { timeoutMs: 3_000 }).catch(() => undefined)
     if (system?.stdout.trim() !== 'Darwin') return way

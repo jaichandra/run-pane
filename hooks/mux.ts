@@ -114,8 +114,12 @@ const HIDDEN_SESSION = 'run-pane'
 export const TMUX_VERSION = ['tmux', '-V']
 
 /** The line a person types into a terminal to look at the hidden server: Ctrl+B d leaves it. `env -u TMUX` lets it be
- * opened from inside a tmux of their own. */
-export const HIDDEN_ATTACH = `exec env -u TMUX tmux -L ${HIDDEN_SOCKET} attach -t ${HIDDEN_SESSION}`
+ * opened from inside a tmux of their own. It is not `exec`ed, so a failure stays on the screen. */
+export const HIDDEN_ATTACH = `env -u TMUX tmux -L ${HIDDEN_SOCKET} attach -t ${HIDDEN_SESSION}`
+
+/** Asks whether the hidden server still has its session (it ends when the person exits every shell in it, and
+ * with the session of the mod that made it). */
+export const HIDDEN_ALIVE = ['tmux', '-L', HIDDEN_SOCKET, 'has-session', '-t', HIDDEN_SESSION]
 
 /** Brings a pane's window to the front of the hidden session, for the next one to attach to it. */
 export const selectArgv = (pane: string): string[] => ['tmux', '-L', HIDDEN_SOCKET, 'select-window', '-t', pane]
@@ -129,16 +133,20 @@ const visibleSplit: MuxDriver['split'] = ({ target, direction, cwd, focus }) => 
   '-P', '-F', '#{pane_id}', '-c', cwd, ...(target ? ['-t', target] : []),
 ]
 
-// A window of the hidden session; the first run starts the server and the session (wide, so a line is not
-// wrapped before it is read), and one that loses the race to do it makes its window after all. The folder
-// is the script's argument, never part of its text.
+// What the keeper window says: it is not a run's, and it is why the server outlives the shells in the other windows.
+const KEEPER = 'echo "run-pane: no command runs here. This window keeps the hidden terminal open; Ctrl+B d leaves it."; exec sleep 2147483647'
+
+// A window of the hidden session. The session starts with a keeper window that does nothing, so the server does not
+// end when the person exits the shell of the last run (tmux ends a session with its last window): the next run
+// finds it where it was. Starting it again when it is there fails and is ignored, which also settles two runs that
+// start together. The window is wide, so a line is not wrapped before it is read. The folder is the script's
+// argument, never part of its text.
 const hiddenSplit: MuxDriver['split'] = ({ cwd }) => {
   const t = `tmux -L ${HIDDEN_SOCKET}`
   return [
     'sh', '-c',
-    `${t} new-window -d -t ${HIDDEN_SESSION}: -P -F '#{pane_id}' -c "$1" 2>/dev/null` +
-      ` || ${t} new-session -d -s ${HIDDEN_SESSION} -x 200 -y 50 -P -F '#{pane_id}' -c "$1" 2>/dev/null` +
-      ` || exec ${t} new-window -d -t ${HIDDEN_SESSION}: -P -F '#{pane_id}' -c "$1"`,
+    `${t} new-session -d -s ${HIDDEN_SESSION} -n keeper -x 200 -y 50 '${KEEPER}' 2>/dev/null;` +
+      ` exec ${t} new-window -d -t ${HIDDEN_SESSION}: -P -F '#{pane_id}' -c "$1"`,
     'sh', cwd,
   ]
 }
