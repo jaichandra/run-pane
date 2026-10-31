@@ -11,7 +11,10 @@ import {
   matchesAny,
   MAX_LINES,
   readPid,
+  BUTTON_COLORS,
+  BUTTON_INK,
   RunLog,
+  shellQuote,
   statusMark,
   stripAnsi,
   suggestionKind,
@@ -56,6 +59,8 @@ type Run = {
   isStopping?: boolean
   // Force kill was pressed: no more waiting.
   isForced?: boolean
+  // Where the output is copied for a terminal window that follows it (Open in shell), once there is one.
+  spool?: { path: string; buffer: string; isFlushing: boolean }
   // Ends the read loop, which leaves the stream and so kills the shell the engine started.
   release?: () => void
 }
@@ -73,9 +78,8 @@ const STYLE: Record<Exclude<PartKind, 'plain' | 'url'>, { color?: string; dimCol
   warning: { color: 'warning' },
 }
 
-// A button's face: the label on a background, so it reads as a control. The colours are theme keys, so they follow the
-// person's theme (`inverseText` is the text meant for a coloured ground).
-const TONES = { neutral: 'inactive', primary: 'suggestion', danger: 'error', success: 'success' } as const
+// A button's face: the label on a light background with dark text, so it reads as a control on any theme.
+const TONES = BUTTON_COLORS
 
 const folderName = (cwd: string): string => cwd.split('/').filter(Boolean).pop() ?? cwd
 
@@ -212,6 +216,7 @@ function finish($: EngineInterface, run: Run, status: RunStatus, code: number | 
   run.status = run.isStopping && (status === 'exited' || status === 'done') ? 'stopped' : status
   run.code = code
   run.release = undefined
+  spoolTo($, run, `\n[run-pane] #${run.id} ${statusWords(run.status, run.code)}\n`)
   showStatus($)
   redraw($)
 }
@@ -289,29 +294,71 @@ async function attach($: EngineInterface, run: Run): Promise<string> {
   return (await attachPane($, run.pane, `run #${run.id}`)).replace('run the command again', `run #${run.id} again with Restart`)
 }
 
-// "Open in shell" on a run: where it runs in a terminal already, that terminal; for a process of the plugin, which has
-// none to attach to, a shell in its folder with its command line typed at the prompt and not run (a second copy of a
-// server could clash with the first), so it can be run there or changed first.
+// What follows the output of a process of the plugin in a terminal window (Open in shell): the output is copied to a
+// file (private to the person) as it arrives, in pieces a quarter of a second apart, and the window tails the file.
+const SPOOL_MS = 250
+
+async function flushSpool($: EngineInterface, spool: NonNullable<Run['spool']>): Promise<void> {
+  const text = spool.buffer
+  spool.buffer = ''
+  spool.isFlushing = false
+  if (text) await $.process.run(['sh', '-c', 'umask 077; cat >> "$1"', 'sh', spool.path], { stdin: text, timeoutMs: MUX_MS }).catch(() => undefined)
+}
+
+// Adds what a run printed to its file, if it has one.
+function spoolTo($: EngineInterface, run: Run, text: string): void {
+  const spool = run.spool
+  if (!spool || text === '') return
+  spool.buffer += text
+  if (spool.isFlushing) return
+  spool.isFlushing = true
+  void $.clock.sleep(SPOOL_MS).then(() => flushSpool($, spool), () => flushSpool($, spool))
+}
+
+function dropSpool($: EngineInterface, run: Run): void {
+  const spool = run.spool
+  run.spool = undefined
+  if (spool) void $.process.run(['rm', '-f', '--', spool.path], { timeoutMs: MUX_MS }).catch(() => undefined)
+}
+
+// A terminal window that shows everything a process of the plugin has printed, then what it prints on: the process is
+// on pipes, not on a terminal, so there is nothing to attach to, and the window only reads (what is typed there does
+// not reach the process, and Ctrl+C there ends the viewing, not the run).
+async function mirror($: EngineInterface, run: Run): Promise<string> {
+  try {
+    if (!run.spool) {
+      const tmp = ((await envOf($.env.get('TMPDIR'))) ?? '/tmp').replace(/\/$/, '')
+      const spool = { path: `${tmp}/run-pane-${Date.now().toString(36)}-${run.id}.log`, buffer: '', isFlushing: true }
+      // Set and read together: what the run prints from now on goes to the buffer, and what it printed is the dump.
+      run.spool = spool
+      const dump = run.log.dump()
+      const made = await $.process.run(['sh', '-c', 'umask 077; cat > "$1"', 'sh', spool.path], { stdin: dump, timeoutMs: MUX_MS })
+      if (made.exitCode !== 0) {
+        run.spool = undefined
+        return `Could not copy the output for a terminal: ${oneLine(made.stderr || made.stdout) || `exit ${made.exitCode}`}`
+      }
+      await flushSpool($, spool)
+      if (run.status !== 'running') spoolTo($, run, `\n[run-pane] #${run.id} ${statusWords(run.status, run.code)}\n`)
+    }
+    const line = `tail -n +1 -f -- ${shellQuote(run.spool.path)}`
+    const way = `Type this in a terminal (Ctrl+C there ends the viewing, not the run): ${line}`
+    const system = await $.process.run(['uname', '-s'], { timeoutMs: 3_000 }).catch(() => undefined)
+    if (system?.stdout.trim() !== 'Darwin') return way
+    const app = await terminalApp($)
+    const made = await $.process.run(lineArgv(app, line, `#${run.id} ${run.cmd}`.slice(0, 40)), { timeoutMs: 15_000 })
+    if (made.exitCode === 0) return `Opened #${run.id}'s output in ${app}: all of it so far, then live. It is a view: typing there does not reach the process.`
+    return `${osascriptFailure(app, made.stdout, made.stderr, made.exitCode)} ${way}`
+  } catch (error) {
+    return `Could not open a terminal window: ${oneLine(error instanceof Error ? error.message : String(error))}`
+  }
+}
+
+// "Open in shell" on a run: where it runs in a terminal already, that terminal; for a process of the plugin, which is on
+// pipes and has no terminal to attach to, a window that follows its output.
 async function openInShell($: EngineInterface, run: Run): Promise<string> {
   if (run.mux === 'hidden') return attach($, run)
   if (run.mux) return `#${run.id} runs in a ${run.mux === 'iterm' ? 'iTerm2' : run.mux} pane beside Claude Code already.`
-  if (!(await canHide($))) return `${await openShell($)} Type: ${run.cmd}`
-  const d = driver('hidden')
-  try {
-    const made = await $.process.run(d.split({ direction: 'right', cwd: run.cwd, focus: false }), { cwd: run.cwd, timeoutMs: MUX_MS })
-    const pane = made.exitCode === 0 ? d.paneId(made.stdout) : undefined
-    if (!pane) return `Could not open a shell: ${oneLine(made.stderr || made.stdout) || 'tmux did not make a window'}`
-    isHiddenUsed = true
-    opened.set(pane, 'hidden')
-    await waitForPrompt($, 'hidden', pane)
-    // The line is typed, not sent: send-keys without its Enter.
-    const [typed] = d.type(pane, run.cmd)
-    if (typed) await $.process.run(typed, { timeoutMs: MUX_MS })
-    const said = await attachPane($, pane, `#${run.id} ${folderName(run.cwd)}`)
-    return run.status === 'running' ? `${said} #${run.id} is still running in the Run pane: its command is typed there, not run.` : `${said} Its command is typed there, not run.`
-  } catch (error) {
-    return `Could not open a shell: ${oneLine(error instanceof Error ? error.message : String(error))}`
-  }
+  return mirror($, run)
 }
 
 async function closePane($: EngineInterface, mux: Mux, pane: string): Promise<void> {
@@ -485,7 +532,10 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
   const run: Run = { id: ++seq, cmd, cwd: await $.session.cwd(), status: 'running', code: null, log: new RunLog() }
   runs.push(run)
   const done = runs.filter(one => one.status !== 'running')
-  for (const old of done.slice(0, Math.max(0, runs.length - KEEP_RUNS))) runs.splice(runs.indexOf(old), 1)
+  for (const old of done.slice(0, Math.max(0, runs.length - KEEP_RUNS))) {
+    runs.splice(runs.indexOf(old), 1)
+    dropSpool($, old)
+  }
   await update($, selected, () => run.id)
   showStatus($)
   redraw($)
@@ -529,13 +579,17 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
         }
         if (head === undefined) {
           run.log.push(step.value.text)
+          spoolTo($, run, step.value.text)
         } else {
           head += step.value.text
           const parsed = readPid(head)
           if (parsed) {
             head = undefined
             if (parsed.pid !== undefined) run.pid = parsed.pid
-            if (parsed.rest) run.log.push(parsed.rest)
+            if (parsed.rest) {
+              run.log.push(parsed.rest)
+              spoolTo($, run, parsed.rest)
+            }
           }
         }
         redraw($)
@@ -767,6 +821,7 @@ export const register: Register = on => {
     // exit has about a second, so they are closed at once, not asked to stop first; a /clear or a resume
     // goes on in the same process, and keeps its panes.
     const isLeaving = e.reason !== 'clear' && e.reason !== 'resume'
+    if (isLeaving) for (const run of runs) dropSpool($, run)
     await Promise.all([
       ...runs.filter(run => run.status === 'running' && !(isLeaving && run.pane)).map(run => stop($, run)),
       ...(isLeaving ? [...opened].map(([pane, mux]) => closePane($, mux, pane)) : []),
@@ -786,7 +841,7 @@ export const register: Register = on => {
     const face = (label: string, tone: keyof typeof TONES = 'neutral'): JSX.Element => (
       <Text>
         <Text color={TONES[tone]}>{'\u2590'}</Text>
-        <Text color="inverseText" backgroundColor={TONES[tone]}>
+        <Text color={BUTTON_INK} backgroundColor={TONES[tone]}>
           {` ${label} `}
         </Text>
         <Text color={TONES[tone]}>{'\u258c'}</Text>
@@ -814,7 +869,7 @@ export const register: Register = on => {
     // wraps (the hint, the buttons), so scrolling stops with the first line at the top, not past it.
     // The suggestions are chips that wrap: about as many rows as their width fills.
     const hintWidth = 4 + groupSuggestions(hints).reduce((sum, group) => sum + (group.prefix ? group.prefix.length + 1 : 0) + group.items.reduce((inner, item) => inner + item.label.length + 5, 0), 0)
-    const hintRows = hints.length > 0 ? 2 * Math.max(1, Math.ceil(hintWidth / Math.max(20, e.props.bodyColumns - 2))) - 1 : 0
+    const hintRows = hints.length > 0 ? 2 * Math.max(1, Math.ceil(hintWidth / Math.max(20, e.props.bodyColumns - 2))) + 1 : 0
     const chrome =
       1 + (e.props.placement === 'inline' ? 4 : 0) + 1 + hintRows + Math.max(1, runs.length) + 3 + (e.props.bodyColumns < 80 ? 2 : 1)
     const visible = Math.max(1, rows - chrome)
@@ -885,6 +940,7 @@ export const register: Register = on => {
             label="Restart"
             onPress={() => {
               runs.splice(runs.indexOf(picked), 1)
+              dropSpool($, picked)
               void start($, picked.cmd)
             }}
           >
@@ -912,6 +968,7 @@ export const register: Register = on => {
             onPress={() => {
               runs.splice(runs.indexOf(picked), 1)
               dismiss($, picked)
+              dropSpool($, picked)
               redraw($)
             }}
           >
@@ -953,21 +1010,30 @@ export const register: Register = on => {
           <Text dimColor>Type &gt; &lt;command&gt; to start one.</Text>
         )}
         {hints.length > 0 && (
-          <Box flexWrap="wrap" columnGap={1} rowGap={1}>
+          // Each tile is a cap (the lower half of a row, in the pill's colour: the pill is a row and a half tall, with
+          // rounded corners) over the pill. So the rows of pills are half a row apart, and the words beside them
+          // sit on the pill's own row (aligned to the bottom).
+          <Box flexWrap="wrap" columnGap={1} alignItems="flex-end">
             <Text dimColor>Try</Text>
             {groupSuggestions(hints).flatMap(group => [
               ...(group.prefix ? [<Text dimColor key={`prefix:${group.prefix}:${group.items[0]?.cmd}`}>{group.prefix}</Text>] : []),
               ...group.items.map(item => {
                 const kind = suggestionKind(item.cmd)
+                const tone = kind === 'run' ? 'primary' : kind === 'test' ? 'success' : 'neutral'
                 return (
-                  <Button plain key={`hint:${item.cmd}`} label={item.cmd} onPress={() => go(item.cmd)}>
-                    {face(item.label, kind === 'run' ? 'primary' : kind === 'test' ? 'success' : 'neutral')}
-                  </Button>
+                  <Box key={`tile:${item.cmd}`} flexDirection="column">
+                    <Text color={TONES[tone]}>{` ${'\u2584'.repeat(item.label.length + 2)} `}</Text>
+                    <Button plain key={`hint:${item.cmd}`} label={item.cmd} onPress={() => go(item.cmd)}>
+                      {face(item.label, tone)}
+                    </Button>
+                  </Box>
                 )
               }),
             ])}
           </Box>
         )}
+        {/* The same half row, in a whole one, between the suggestions and the runs. */}
+        {hints.length > 0 && <Text> </Text>}
         {runs.length === 0 && <Text dimColor>Nothing running. Pick a suggestion or type a command.</Text>}
         {runs.map(run => (
           <Box key={`run:${run.id}`}>

@@ -12,6 +12,7 @@ import {
   packageScripts,
   readPid,
   RunLog,
+  shellQuote,
   statusMark,
   statusWords,
   stripAnsi,
@@ -212,4 +213,20 @@ test('a suggestion is for running, for testing or for anything else, by its last
   for (const cmd of ['npm run dev', 'npm run start:ci', 'npm run serve', 'npm run watch', 'cargo run', 'make up']) expect(suggestionKind(cmd), cmd).toBe('run')
   for (const cmd of ['npm run test', 'npm run test:libs', 'cargo test', 'make e2e', 'npm run check']) expect(suggestionKind(cmd), cmd).toBe('test')
   for (const cmd of ['npm run build', 'npm run lint', 'make seed', 'docker compose up --build', 'npm run restart-all']) expect(suggestionKind(cmd), cmd).toBe('other')
+})
+
+test('the log can be dumped for a terminal: whole lines with a reset after each, and the unfinished one as it is', () => {
+  const log = new RunLog()
+  expect(log.dump()).toBe('')
+  log.push('\u001b[31mred\nplain\npart')
+  expect(log.dump()).toBe('\u001b[31mred\u001b[0m\nplain\u001b[0m\npart')
+  // What comes next completes the unfinished line, as it would in the terminal.
+  log.push('ial\n')
+  expect(log.dump()).toBe('\u001b[31mred\u001b[0m\nplain\u001b[0m\npartial\u001b[0m\n')
+})
+
+test('a word for a shell line is one word, whatever it holds', () => {
+  expect(shellQuote('/tmp/run-pane-x-1.log')).toBe("'/tmp/run-pane-x-1.log'")
+  expect(shellQuote("it's $(x) `y`")).toBe("'it'\\''s $(x) `y`'")
+  expect(shellQuote('')).toBe("''")
 })

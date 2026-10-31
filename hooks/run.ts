@@ -75,6 +75,13 @@ export class RunLog {
     return count >= all.length ? [...all] : all.slice(all.length - count)
   }
 
+  /** Everything held, as a terminal would take it: each whole line with its colours and a reset after it, and the
+   * unfinished one as it is, so what comes next completes it. */
+  dump(): string {
+    const whole = this.lines.map(line => `${line.text}\u001b[0m`).join('\n')
+    return `${whole}${this.lines.length > 0 ? '\n' : ''}${this.partial}`
+  }
+
   clear(): void {
     this.lines = []
     this.partial = ''
@@ -82,6 +89,13 @@ export class RunLog {
     this.gone = 0
   }
 }
+
+/** A word for a shell line, in single quotes, whatever it holds. */
+export const shellQuote = (text: string): string => `'${text.replace(/'/g, `'\\''`)}'`
+
+// The buttons' colours: light grounds with dark text, so they read on a dark theme and a light one.
+export const BUTTON_COLORS = { neutral: '#bdbdc6', primary: '#c3c9fb', danger: '#ff9fb0', success: '#8ed99f' } as const
+export const BUTTON_INK = '#1b1b2b'
 
 // Commands that take over the terminal or wait for the person at it, which a pipe cannot give them.
 const ALWAYS = new Set([

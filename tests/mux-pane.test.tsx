@@ -1,6 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { BUTTON_COLORS } from '../hooks/run'
+
 // Nothing here starts herdr or tmux: `process.run` is answered by the stub below, which keeps a pane's
 // screen the way the multiplexer would show it, and records what it was asked to run.
 const PANE = {
@@ -304,6 +306,7 @@ test('Stop types Ctrl+C into the pane and the run reads stopped once the shell i
   await until(() => machine.calls.some(argv => argv[2] === 'send-keys'))
   expect(machine.calls).toContainEqual(['herdr', 'pane', 'send-keys', 'w1:p1', 'C-c'])
   expect(machine.calls.some(argv => argv[2] === 'close')).toBe(false)
+  await untilOver($)
   expect(await ui.find({ type: 'Text', text: /stopped/ })).toBeDefined()
   await ui.unmount()
 })
@@ -822,28 +825,6 @@ test('what a full-screen program shows is the run output while it holds the scre
   expect(await read()).not.toContain('-- INSERT --')
 })
 
-test('Open in shell on a process of the plugin opens a window on a new hidden shell with its command typed and not run', async ($, on) => {
-  const machine = machineOf({ hasTmux: true, settings: '{}' })
-  engine(on, machine)
-  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
-  await gt($, 'npm run dev')
-  expect(machine.spawned).toHaveLength(1)
-
-  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'shell' })
-  await until(() => machine.toasts.length > 0)
-  const split = machine.calls.find(argv => argv[0] === 'sh' && argv[2]?.includes('new-window'))
-  expect(split?.slice(3)).toEqual(['sh', '/w/sample-app'])
-  // The line is typed with send-keys -l, and nothing presses Enter.
-  expect(machine.calls.find(argv => argv.includes('-l'))).toEqual(['tmux', '-L', 'run-pane', 'send-keys', '-t', '%1', '-l', '--', 'npm run dev'])
-  expect(machine.calls.some(argv => argv.includes('Enter'))).toBe(false)
-  expect(machine.calls).toContainEqual(['tmux', '-L', 'run-pane', 'select-window', '-t', '%1'])
-  const window = machine.calls.find(argv => argv[0] === 'osascript')
-  expect(window?.slice(3)).toEqual(['--', 'env -u TMUX tmux -L run-pane attach -t run-pane', '#1 sample-app'])
-  expect(machine.toasts[0]).toContain('#1 is still running in the Run pane: its command is typed there, not run.')
-  await ui.unmount()
-})
-
 test('Open in shell on a run in a hidden terminal is the Attach, and in a pane beside Claude Code it says so', async ($, on) => {
   const busy = { screen: (cmd: string) => ({ text: `${PROMPT} ${cmd}\n`, isBusy: true }) }
   const hidden = machineOf({ hasTmux: true, settings: '{}', ...busy })
@@ -870,6 +851,6 @@ test('the Attach button has a space before it in the run row and a background', 
   // `vi package.json running` then a space, then the button: "running [ Attach ]".
   expect(row?.text).toMatch(/running\s+\u2590 Attach \u258c/)
   const pill = (await ui.find({ type: 'Text', text: '\u2590 Attach \u258c' })) as { children?: { props?: Record<string, unknown> }[] } | undefined
-  expect(pill?.children?.[1]?.props?.backgroundColor).toBe('suggestion')
+  expect(pill?.children?.[1]?.props?.backgroundColor).toBe(BUTTON_COLORS.primary)
   await ui.unmount()
 })

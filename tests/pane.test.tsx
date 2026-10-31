@@ -1,6 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
+import { BUTTON_COLORS, BUTTON_INK } from '../hooks/run'
+
 const PANE = {
   plugin: 'run-pane',
   component: 'Pane',
@@ -26,7 +28,7 @@ const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) =>
 // Stands for the engine beneath the mod: the calls the mod makes are answered here.
 function engine(
   on: On,
-  process: { calls: string[][]; lines: string[]; remote?: string; opened?: string[]; toasts?: string[]; isFsHung?: boolean; spawns?: { argv: readonly string[]; env?: Record<string, string> | undefined }[]; existing?: string[] },
+  process: { calls: string[][]; lines: string[]; remote?: string; opened?: string[]; toasts?: string[]; writes?: { argv: string[]; stdin?: string | undefined }[]; later?: { gate: Promise<void>; lines: string[] }; isFsHung?: boolean; spawns?: { argv: readonly string[]; env?: Record<string, string> | undefined }[]; existing?: string[] },
   files: Record<string, string> = { 'package.json': '{"scripts":{"dev":"vite","test":"vitest"}}' },
 ) {
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -55,6 +57,7 @@ function engine(
   })
   on('process.run', (_, e) => {
     process.calls.push([...e.argv])
+    if (e.init?.stdin !== undefined) process.writes?.push({ argv: [...e.argv], stdin: e.init.stdin })
     // No tmux here: the commands are processes of the mod.
     if (e.argv[0] === 'tmux') return { value: { exitCode: 127, stdout: '', stderr: 'tmux: not found', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[0] === 'uname') return { value: { exitCode: 0, stdout: 'Darwin\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -72,6 +75,10 @@ function engine(
     process.spawns?.push({ argv: e.argv, env: e.env })
     yield { stream: 'stderr' as const, text: '@@run-pane-pid 4242\n' }
     for (const line of process.lines) yield { stream: 'stdout' as const, text: line }
+    if (process.later) {
+      await process.later.gate
+      for (const line of process.later.lines) yield { stream: 'stdout' as const, text: line }
+    }
     // A dev server that goes quiet and stays up.
     await new Promise<void>(() => undefined)
   })
@@ -420,7 +427,7 @@ test('a command that needs a terminal where there is none runs without one and s
   expect(got).toContain('no terminal to give it here')
 })
 
-test('buttons have a background so they read as controls: a pill, its label on a coloured ground with a space each side', async ($, on) => {
+test('buttons have a light background so they read as controls: a pill, its label in dark ink with a space each side', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
@@ -428,13 +435,13 @@ test('buttons have a background so they read as controls: a pill, its label on a
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const stop = await faceOf(ui, 'Stop (Ctrl+C)')
-  expect(stop?.label).toMatchObject({ color: 'inverseText', backgroundColor: 'error' })
+  expect(stop?.label).toMatchObject({ color: BUTTON_INK, backgroundColor: BUTTON_COLORS.danger })
   // The half blocks at the ends are in the button's own colour, so it reads as rounded.
-  expect(stop?.edge).toBe('error')
-  expect(stop?.end).toBe('error')
-  expect((await faceOf(ui, 'Clear'))?.label).toMatchObject({ color: 'inverseText', backgroundColor: 'inactive' })
-  expect((await faceOf(ui, 'Open in shell'))?.label).toMatchObject({ color: 'inverseText', backgroundColor: 'suggestion' })
-  expect((await faceOf(ui, 'Close pane'))?.label).toMatchObject({ backgroundColor: 'inactive' })
+  expect(stop?.edge).toBe(BUTTON_COLORS.danger)
+  expect(stop?.end).toBe(BUTTON_COLORS.danger)
+  expect((await faceOf(ui, 'Clear'))?.label).toMatchObject({ color: BUTTON_INK, backgroundColor: BUTTON_COLORS.neutral })
+  expect((await faceOf(ui, 'Open in shell'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.primary })
+  expect((await faceOf(ui, 'Close pane'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.neutral })
   // The Shell button is the Open in shell one.
   expect(await faceOf(ui, 'Shell')).toBeUndefined()
   await ui.unmount()
@@ -447,14 +454,18 @@ test('the suggestions are pills in one wrapping row after a dim Try, with npm ru
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const boxes = await ui.findAll({ type: 'Box' })
-  const row = boxes.find(box => box.props?.flexWrap === 'wrap' && /^Try\s*npm run\s*\u2590 dev \u258c/.test(box.text ?? ''))
+  const row = boxes.find(box => box.props?.flexWrap === 'wrap' && /^Try\s*npm run/.test(box.text ?? '') && (box.text ?? '').includes('\u2590 dev \u258c'))
   expect(row).toBeDefined()
+  // Over each pill a cap, half a row in its colour (a space each side, two blocks more than the label is wide).
+  const cap = await ui.find({ type: 'Text', text: ` ${'\u2584'.repeat(5)} ` })
+  expect(cap?.props?.color).toBe(BUTTON_COLORS.primary)
+  expect(row?.props?.alignItems).toBe('flex-end')
   // The words every one starts with are in the row once, not in each button.
   expect(((row?.text ?? '').match(/npm run/g) ?? []).length).toBe(1)
-  expect((await faceOf(ui, 'dev'))?.label).toMatchObject({ backgroundColor: 'suggestion' })
-  expect((await faceOf(ui, 'start:ci'))?.label).toMatchObject({ backgroundColor: 'suggestion' })
-  expect((await faceOf(ui, 'test'))?.label).toMatchObject({ backgroundColor: 'success' })
-  expect((await faceOf(ui, 'build'))?.label).toMatchObject({ backgroundColor: 'inactive' })
+  expect((await faceOf(ui, 'dev'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.primary })
+  expect((await faceOf(ui, 'start:ci'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.primary })
+  expect((await faceOf(ui, 'test'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.success })
+  expect((await faceOf(ui, 'build'))?.label).toMatchObject({ backgroundColor: BUTTON_COLORS.neutral })
   // Pressing one still runs the whole command.
   expect(await ui.find({ key: 'hint:npm run dev' })).toBeDefined()
   await ui.press({ key: 'hint:npm run test' })
@@ -464,17 +475,80 @@ test('the suggestions are pills in one wrapping row after a dim Try, with npm ru
   await ui.unmount()
 })
 
-test('Open in shell on a process of the plugin, with no tmux, opens a shell in its folder and says what to type', async ($, on) => {
-  const process = { calls: [] as string[][], lines: ['ready\n'], toasts: [] as string[] }
+test('Open in shell on a process of the plugin opens a window with all its output so far, copied to a private file', async ($, on) => {
+  const process = { calls: [] as string[][], lines: ['one\n', '\u001b[32mtwo\u001b[0m\n', 'partial'], toasts: [] as string[], writes: [] as { argv: string[]; stdin?: string | undefined }[] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'npm run dev')
+  await untilPrinted($, 'partial')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 'shell' })
-  await new Promise<void>(resolve => setTimeout(resolve, 30))
-  expect(process.calls.some(argv => argv[0] === 'osascript')).toBe(true)
-  expect(process.toasts.some(text => text.endsWith('Type: npm run dev'))).toBe(true)
+  await new Promise<void>(resolve => setTimeout(resolve, 60))
+  // The whole log goes to a file nobody else can read (umask 077), whole lines with a reset after each, the
+  // unfinished one as it is.
+  const made = process.writes.find(write => write.argv[2]?.includes('cat >'))
+  expect(made?.argv[2]).toContain('umask 077')
+  expect(made?.stdin).toBe('one\u001b[0m\n\u001b[32mtwo\u001b[0m\u001b[0m\npartial')
+  const path = made?.argv[4] ?? ''
+  expect(path).toMatch(/^\/tmp\/run-pane-[a-z0-9]+-1\.log$/)
+  // The window tails it from its first line: all so far, then live. The path is quoted, never part of a script.
+  const window = process.calls.find(argv => argv[0] === 'osascript')
+  expect(window?.slice(3)).toEqual(['--', `tail -n +1 -f -- '${path}'`, '#1 npm run dev'])
+  expect(process.toasts.some(text => text.includes("Opened #1's output in Terminal") && text.includes('does not reach the process'))).toBe(true)
+  await ui.unmount()
+})
+
+test('after Open in shell what the run prints goes to the same file, and its end is said there', async ($, on) => {
+  let open!: () => void
+  const gate = new Promise<void>(resolve => {
+    open = resolve
+  })
+  const process = {
+    calls: [] as string[][],
+    lines: ['first\n'],
+    later: { gate, lines: ['second\n'] },
+    toasts: [] as string[],
+    writes: [] as { argv: string[]; stdin?: string | undefined }[],
+  }
+  engine(on, process)
+  on('clock.sleep', async () => {
+    await new Promise<void>(resolve => setTimeout(resolve, 1))
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm run dev')
+  await untilPrinted($, 'first')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'shell' })
+  await new Promise<void>(resolve => setTimeout(resolve, 60))
+  open()
+  await untilPrinted($, 'second')
+  await new Promise<void>(resolve => setTimeout(resolve, 60))
+  const appended = process.writes.filter(write => write.argv[2]?.includes('cat >>'))
+  expect(appended.map(write => write.stdin).join('')).toContain('second\n')
+  // Everything goes to the file the window follows.
+  expect(new Set(appended.map(write => write.argv[4])).size).toBe(1)
+  await ui.unmount()
+})
+
+test('pressing Open in shell again opens another window on the same file', async ($, on) => {
+  const process = { calls: [] as string[][], lines: ['one\n'], toasts: [] as string[], writes: [] as { argv: string[]; stdin?: string | undefined }[] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+  await untilPrinted($, 'one')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'shell' })
+  await new Promise<void>(resolve => setTimeout(resolve, 60))
+  await ui.press({ key: 'shell' })
+  await new Promise<void>(resolve => setTimeout(resolve, 60))
+  const windows = process.calls.filter(argv => argv[0] === 'osascript')
+  expect(windows).toHaveLength(2)
+  expect(windows[0]?.[4]).toBe(windows[1]?.[4])
+  expect(process.writes.filter(write => write.argv[2]?.includes('cat >') && !write.argv[2]?.includes('cat >>'))).toHaveLength(1)
   await ui.unmount()
 })
 
