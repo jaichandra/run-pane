@@ -42,6 +42,37 @@ const TERMINAL_SCRIPT = `on run argv
 end run
 `
 
+// The same windows with a fixed line typed in, not a `cd`: the line is the script's first argument.
+const ITERM_LINE_SCRIPT = `on run argv
+  set typedLine to item 1 of argv
+  set tabTitle to item 2 of argv
+  tell application "iTerm"
+    activate
+    set newWindow to (create window with default profile)
+    tell current session of newWindow
+      write text typedLine
+      try
+        set name to tabTitle
+      end try
+    end tell
+  end tell
+end run
+`
+
+const TERMINAL_LINE_SCRIPT = `on run argv
+  set typedLine to item 1 of argv
+  set tabTitle to item 2 of argv
+  tell application "Terminal"
+    activate
+    set newTab to do script typedLine
+    try
+      set custom title of newTab to tabTitle
+      set title displays custom title of newTab to true
+    end try
+  end tell
+end run
+`
+
 export const appleScript = (app: TerminalApp): string => (app === 'iTerm' ? ITERM_SCRIPT : TERMINAL_SCRIPT)
 
 /** The window's title: the folder's name. */
@@ -62,6 +93,17 @@ export const osascriptArgv = (app: TerminalApp, folder: string): string[] => [
   '--',
   folder,
   shellTitle(folder),
+]
+
+/** The osascript command that opens a window and types `line` into it. The line is the mod's own fixed text,
+ * never something a command or a folder made. */
+export const lineArgv = (app: TerminalApp, line: string, title: string): string[] => [
+  'osascript',
+  '-e',
+  app === 'iTerm' ? ITERM_LINE_SCRIPT : TERMINAL_LINE_SCRIPT,
+  '--',
+  line,
+  title,
 ]
 
 /** What an error or a stream said, as one short line. */

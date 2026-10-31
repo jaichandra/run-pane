@@ -51,6 +51,8 @@ function engine(
   })
   on('process.run', (_, e) => {
     process.calls.push([...e.argv])
+    // No tmux here: the commands are processes of the mod.
+    if (e.argv[0] === 'tmux') return { value: { exitCode: 127, stdout: '', stderr: 'tmux: not found', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[0] === 'git') return { value: { exitCode: 0, stdout: process.remote ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     if (e.argv[0] === 'ps') return { value: { exitCode: 0, stdout: ' 4242 1\n 4243 4242\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }

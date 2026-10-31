@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { detectMux, driver, echoes, readPane } from '../hooks/mux'
+import { detectMux, driver, echoes, HIDDEN_ATTACH, isTmuxPane, readPane } from '../hooks/mux'
 
 test('herdr is told by HERDR_ENV=1 with a pane, tmux by TMUX with a pane, and herdr wins inside tmux', () => {
   expect(detectMux({ herdrEnv: '1', herdrPane: 'w4:p1' })).toBe('herdr')
@@ -99,4 +99,26 @@ test('a shell is idle when it leads its terminal: herdr by its process info, tmu
   expect(herdr.shellPid('not json')).toBeUndefined()
   expect(tmux.shellPid(' 4113606 4113674\n')).toBe(4113606)
   expect(tmux.shellPid('')).toBeUndefined()
+})
+
+test('the hidden tmux server is the same driver on a socket of its own, with the folder and the pane as arguments', () => {
+  const hidden = driver('hidden')
+  expect(hidden.type('%2', '-x')).toEqual([
+    ['tmux', '-L', 'run-pane', 'send-keys', '-t', '%2', '-l', '--', '-x'],
+    ['tmux', '-L', 'run-pane', 'send-keys', '-t', '%2', 'Enter'],
+  ])
+  expect(hidden.read('%2', 50)).toEqual(['tmux', '-L', 'run-pane', 'capture-pane', '-p', '-J', '-t', '%2', '-S', '-50'])
+  expect(hidden.interrupt('%2')).toEqual(['tmux', '-L', 'run-pane', 'send-keys', '-t', '%2', 'C-c'])
+  expect(hidden.close('%2')).toEqual(['tmux', '-L', 'run-pane', 'kill-pane', '-t', '%2'])
+  expect(hidden.idle('%2').slice(-3)).toEqual(['%2', '-L', 'run-pane'])
+  // A folder with quotes in it is only ever an argument.
+  const split = hidden.split({ direction: 'right', cwd: "/w/it's $(x)", focus: false })
+  expect(split.slice(0, 2)).toEqual(['sh', '-c'])
+  expect(split[2]).not.toContain('$(x)')
+  expect(split.slice(3)).toEqual(['sh', "/w/it's $(x)"])
+  // The visible tmux is unchanged: no socket.
+  expect(driver('tmux').idle('%2')).toEqual(['sh', '-c', expect.any(String), 'sh', '%2'])
+  expect(HIDDEN_ATTACH).toBe('exec env -u TMUX tmux -L run-pane attach -t run-pane')
+  expect(isTmuxPane('%12')).toBe(true)
+  for (const text of ['', '%', '%1;x', '1', '%1\n', '$(x)']) expect(isTmuxPane(text), text).toBe(false)
 })

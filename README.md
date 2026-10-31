@@ -79,6 +79,7 @@ The buttons:
 | Clear | Empties the selected run's output. |
 | Remove | Takes a finished run off the list. |
 | End | Scrolls the Run pane to its last row and follows new output again. |
+| Attach | For a run in the hidden tmux server: opens a terminal window on it, so you can type to the command. |
 | Shell | The same as `/shell`. |
 | Close pane | Closes the Run pane. Esc does the same. Runs keep going. |
 
@@ -96,6 +97,7 @@ When Claude Code runs inside [herdr](https://herdr.dev) (`HERDR_ENV=1`) or tmux 
 - When you leave the session (`/exit`, Ctrl+C or Ctrl+D), every pane the plugin opened, for runs and for `/shell`, is closed at once, and what runs in them ends with them (Claude Code gives an exit about a second, so they are not asked to stop first). A `/clear` keeps them.
 - If a pane cannot be made, the command runs as before, as a process of the plugin, so `/rp` never stops working because of the multiplexer.
 - The output is read back about twice a second and holds the last 2000 lines.
+- Anywhere else, if tmux is installed, the same happens in a hidden tmux server of the plugin's own (`tmux -L run-pane`, never shown): each command is typed into a window of it, and the Run pane follows that. Commands that need a terminal (`vi`, `less`, `ssh`) work there: press **Attach** on the run to open a window on the server (iTerm or Terminal on macOS; elsewhere the button tells you the line to type, `tmux -L run-pane attach -t run-pane`; Ctrl+B d leaves it). While such a command holds the screen, the Run pane shows no output for it. The server ends with the session. Without tmux, commands run as processes of the plugin, which have no terminal.
 - To turn this off, set `"multiplexer": false` in `hooks/run-pane.json` (see below).
 
 ### `/shell`
@@ -121,7 +123,7 @@ The mod needs no configuration. If you bundle it into your own tooling you can d
 ```
 
 - `suggestions`: commands to suggest before the ones found in the folder.
-- `multiplexer`: `false` keeps `/rp` out of herdr and tmux panes, so it runs commands as processes of the plugin even inside them. `/shell` keeps using them.
+- `multiplexer`: `false` keeps `/rp` out of herdr and tmux panes and out of the hidden tmux server, so it runs commands as processes of the plugin even inside them. `/shell` keeps using them.
 - `openFor`: words that make the pane open by itself, without taking the keyboard, when the folder's git remote (`origin`) or its path contains one of them (case does not matter; a linked worktree shares its repository's remote, so it counts). Anywhere else the pane waits for `/rp`.
 
 Both are optional. A missing or unreadable file means the defaults.

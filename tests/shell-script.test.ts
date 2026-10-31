@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { appleScript, hasControls, ITERM_PATH, oneLine, osascriptArgv, shellTitle } from '../hooks/shell'
+import { appleScript, hasControls, ITERM_PATH, lineArgv, oneLine, osascriptArgv, shellTitle } from '../hooks/shell'
 
 test('each terminal has one fixed script that reads the folder and the title from argv', async () => {
   for (const app of ['iTerm', 'Terminal'] as const) {
@@ -44,4 +44,14 @@ test('a message is made one line and cut when long', async () => {
   expect(oneLine('x'.repeat(500))).toHaveLength(200)
   expect(oneLine('x'.repeat(500)).endsWith('…')).toBe(true)
   expect(oneLine('x'.repeat(200))).toBe('x'.repeat(200))
+})
+
+test('a line typed into a window is the script\'s argument, never part of its text', async () => {
+  const [bin, flag, script, dash, line, title] = lineArgv('Terminal', 'exec tmux x', 'run #1')
+  expect([bin, flag, dash, line, title]).toEqual(['osascript', '-e', '--', 'exec tmux x', 'run #1'])
+  expect(script).toContain('set typedLine to item 1 of argv')
+  expect(script).not.toContain('exec tmux x')
+  expect(script).not.toContain('do shell script')
+  expect(script.match(/write text|do script/g)).toHaveLength(1)
+  expect(lineArgv('iTerm', 'x', 't')[2]).toContain('create window with default profile')
 })

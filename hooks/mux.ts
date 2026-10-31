@@ -2,7 +2,9 @@
 // in, the commands that split a pane, type into it, read it back and close it, and how what a pane
 // shows is told from the command that was typed into it.
 
-export type Mux = 'herdr' | 'tmux'
+// `hidden`: no multiplexer of the person's, so a tmux server of the mod's own (its own socket, never shown)
+// holds the terminals, and the Run pane is where they are followed.
+export type Mux = 'herdr' | 'tmux' | 'hidden'
 
 /** The variables that tell which multiplexer a session runs in. */
 export type MuxEnv = { herdrEnv?: string | undefined; herdrPane?: string | undefined; tmux?: string | undefined; tmuxPane?: string | undefined }
@@ -78,34 +80,74 @@ const herdr: MuxDriver = {
   close: pane => ['herdr', 'pane', 'close', pane],
 }
 
+/** The socket of the hidden tmux server and the name of its one session: every run is a window of it. */
+export const HIDDEN_SOCKET = 'run-pane'
+const HIDDEN_SESSION = 'run-pane'
+
+/** What tells whether tmux is installed. */
+export const TMUX_VERSION = ['tmux', '-V']
+
+/** The line a person types into a terminal to look at the hidden server: Ctrl+B d leaves it. `env -u TMUX` lets it be
+ * opened from inside a tmux of their own. */
+export const HIDDEN_ATTACH = `exec env -u TMUX tmux -L ${HIDDEN_SOCKET} attach -t ${HIDDEN_SESSION}`
+
+/** Brings a pane's window to the front of the hidden session, for the next one to attach to it. */
+export const selectArgv = (pane: string): string[] => ['tmux', '-L', HIDDEN_SOCKET, 'select-window', '-t', pane]
+
+/** Whether text is a tmux pane id (`%12`), the only kind of pane the hidden server hands out. */
+export const isTmuxPane = (text: string): boolean => /^%\d+$/.test(text)
+
 // `-d` leaves the focus where it was; `--` ends the options, so a line that starts with a dash is text.
-const tmux: MuxDriver = {
-  split: ({ target, direction, cwd, focus }) => [
-    'tmux', 'split-window', ...(focus ? [] : ['-d']), direction === 'right' ? '-h' : '-v',
-    '-P', '-F', '#{pane_id}', '-c', cwd, ...(target ? ['-t', target] : []),
-  ],
-  paneId: stdout => stdout.trim() || undefined,
-  type: (pane, line) => [
-    ['tmux', 'send-keys', '-t', pane, '-l', '--', line],
-    ['tmux', 'send-keys', '-t', pane, 'Enter'],
-  ],
-  read: (pane, lines) => ['tmux', 'capture-pane', '-p', '-J', '-t', pane, '-S', `-${lines}`],
-  // The same test as herdr's, made with ps: `pid tpgid` of the pane's shell. The pane id is the script's
-  // argument, never part of its text.
-  idle: pane => ['sh', '-c', 'ps -o pid= -o tpgid= -p "$(tmux display-message -p -t "$1" "#{pane_pid}")"', 'sh', pane],
-  isIdle: stdout => {
-    const [pid, group] = stdout.trim().split(/\s+/).map(Number)
-    return Number.isInteger(pid) && pid > 0 && pid === group
-  },
-  shellPid: stdout => {
-    const pid = Number(stdout.trim().split(/\s+/)[0])
-    return Number.isInteger(pid) && pid > 1 ? pid : undefined
-  },
-  interrupt: pane => ['tmux', 'send-keys', '-t', pane, 'C-c'],
-  close: pane => ['tmux', 'kill-pane', '-t', pane],
+const visibleSplit: MuxDriver['split'] = ({ target, direction, cwd, focus }) => [
+  'tmux', 'split-window', ...(focus ? [] : ['-d']), direction === 'right' ? '-h' : '-v',
+  '-P', '-F', '#{pane_id}', '-c', cwd, ...(target ? ['-t', target] : []),
+]
+
+// A window of the hidden session; the first run starts the server and the session (wide, so a line is not
+// wrapped before it is read), and one that loses the race to do it makes its window after all. The folder
+// is the script's argument, never part of its text.
+const hiddenSplit: MuxDriver['split'] = ({ cwd }) => {
+  const t = `tmux -L ${HIDDEN_SOCKET}`
+  return [
+    'sh', '-c',
+    `${t} new-window -d -t ${HIDDEN_SESSION}: -P -F '#{pane_id}' -c "$1" 2>/dev/null` +
+      ` || ${t} new-session -d -s ${HIDDEN_SESSION} -x 200 -y 50 -P -F '#{pane_id}' -c "$1" 2>/dev/null` +
+      ` || exec ${t} new-window -d -t ${HIDDEN_SESSION}: -P -F '#{pane_id}' -c "$1"`,
+    'sh', cwd,
+  ]
 }
 
-export const driver = (mux: Mux): MuxDriver => (mux === 'herdr' ? herdr : tmux)
+/** tmux, on the person's server (no `socket`) or on the hidden one. */
+function tmuxDriver(socket: readonly string[], split: MuxDriver['split']): MuxDriver {
+  const t = ['tmux', ...socket]
+  return {
+    split,
+    paneId: stdout => stdout.trim() || undefined,
+    type: (pane, line) => [
+      [...t, 'send-keys', '-t', pane, '-l', '--', line],
+      [...t, 'send-keys', '-t', pane, 'Enter'],
+    ],
+    read: (pane, lines) => [...t, 'capture-pane', '-p', '-J', '-t', pane, '-S', `-${lines}`],
+    // The same test as herdr's, made with ps: `pid tpgid` of the pane's shell. The pane id and the socket
+    // are the script's arguments, never part of its text.
+    idle: pane => ['sh', '-c', 'pane=$1; shift; ps -o pid= -o tpgid= -p "$(tmux "$@" display-message -p -t "$pane" "#{pane_pid}")"', 'sh', pane, ...socket],
+    isIdle: stdout => {
+      const [pid, group] = stdout.trim().split(/\s+/).map(Number)
+      return Number.isInteger(pid) && pid > 0 && pid === group
+    },
+    shellPid: stdout => {
+      const pid = Number(stdout.trim().split(/\s+/)[0])
+      return Number.isInteger(pid) && pid > 1 ? pid : undefined
+    },
+    interrupt: pane => [...t, 'send-keys', '-t', pane, 'C-c'],
+    close: pane => [...t, 'kill-pane', '-t', pane],
+  }
+}
+
+const tmux = tmuxDriver([], visibleSplit)
+const hidden = tmuxDriver(['-L', HIDDEN_SOCKET], hiddenSplit)
+
+export const driver = (mux: Mux): MuxDriver => (mux === 'herdr' ? herdr : mux === 'hidden' ? hidden : tmux)
 
 const SGR = /\u001b\[[0-9;]*m/g
 

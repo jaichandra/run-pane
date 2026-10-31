@@ -31,6 +31,8 @@ type Machine = {
   jobs?: Set<string>
   /** Whether pgrep is missing, so the jobs cannot be told. */
   isPgrepMissing?: boolean
+  /** Whether tmux is installed, for the hidden terminals used where the person has no multiplexer. */
+  hasTmux?: boolean
   /** Whether splitting fails. */
   isSplitBroken?: boolean
   settings?: string
@@ -65,6 +67,7 @@ function engine(on: On, machine: Machine): void {
     await new Promise<void>(resolve => setTimeout(resolve, 1))
     return { value: undefined }
   })
+  on('fs.exists', () => ({ value: false }))
   on('env.get', (_, e) => ({ value: machine.env[e.name] }))
   on('fs.read', (_, e) => {
     if (machine.settings !== undefined && e.path.endsWith('run-pane.json')) return { value: machine.settings }
@@ -78,10 +81,16 @@ function engine(on: On, machine: Machine): void {
   on('process.run', (_, e) => {
     const argv = [...e.argv]
     machine.calls.push(argv)
-    const [bin, ...rest] = argv
+    const [bin, ...all] = argv
+    // The hidden server is the same tmux on a socket of its own.
+    const rest = bin === 'tmux' && all[0] === '-L' ? all.slice(2) : all
+    if (bin === 'tmux' && rest[0] === '-V') return machine.hasTmux ? done('tmux 3.4\n') : done('', 127, 'tmux: not found')
+    if (bin === 'uname') return done('Darwin\n')
+    // The hidden server's windows are made by a script that starts tmux itself.
+    if (bin === 'sh' && rest[0] === '-c' && rest[1]?.includes('new-window')) return machine.isSplitBroken ? done('', 1, 'no server') : done(`%${++panes}\n`)
     // Whether a pane's shell is at its prompt: herdr's process info, tmux's ps.
     if ((bin === 'herdr' && rest[1] === 'process-info') || (bin === 'sh' && rest[0] === '-c')) {
-      const pane = argv[argv.length - 1] as string
+      const pane = (bin === 'sh' ? argv[4] : argv[argv.length - 1]) as string
       if (machine.gone?.has(pane)) return done('', 1, "can't find pane")
       const line = typed.get(pane)
       const isBusy = line === undefined ? machine.busy?.has(pane) === true : machine.screen?.(line, reads.get(pane) ?? 0, interrupted.has(pane))?.isBusy === true
@@ -325,7 +334,8 @@ test('outside a multiplexer nothing asks one for a pane', async ($, on) => {
   await gt($, 'npm test')
 
   expect(machine.spawned).toHaveLength(1)
-  expect(machine.calls).toEqual([])
+  // Only whether tmux is there, which it is not.
+  expect(machine.calls).toEqual([['tmux', '-V']])
 })
 
 test('/shell splits a focused pane in the folder, in herdr and in tmux', async ($, on) => {
@@ -483,4 +493,83 @@ test('where pgrep cannot run the jobs are not assumed, and the pane is used agai
   await ui.unmount()
   await gt($, 'npm run lint')
   expect(machine.calls.filter(argv => argv[2] === 'split')).toHaveLength(1)
+})
+
+test('without a multiplexer of the person\'s, a command runs in a window of a hidden tmux server and the Run pane follows it', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, screen: finishing() })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+
+  machine.opened = []
+  // Nobody sees the hidden window, so the Run pane opens.
+  expect((await gt($, 'vi notes.txt')).text).toContain('Started #1')
+  expect(machine.opened).toEqual(['run'])
+  expect(machine.spawned).toEqual([])
+  const split = machine.calls.find(argv => argv[0] === 'sh' && argv[2]?.includes('new-window'))
+  expect(split?.slice(3)).toEqual(['sh', '/w/sample-app'])
+  expect(split?.[2]).toContain('tmux -L run-pane')
+  expect(machine.calls.find(argv => argv[1] === '-L' && argv.includes('-l'))).toEqual(['tmux', '-L', 'run-pane', 'send-keys', '-t', '%1', '-l', '--', 'vi notes.txt'])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ key: 'restart:1' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /building/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a running hidden run has an Attach button that opens a window on the hidden server, at its window', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, screen: cmd => ({ text: `${PROMPT} ${cmd}\n`, isBusy: true }) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'vi notes.txt')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'attach:1' })
+  await until(() => machine.calls.some(argv => argv[0] === 'osascript'))
+  expect(machine.calls).toContainEqual(['tmux', '-L', 'run-pane', 'select-window', '-t', '%1'])
+  const window = machine.calls.find(argv => argv[0] === 'osascript')
+  expect(window?.slice(3)).toEqual(['--', 'exec env -u TMUX tmux -L run-pane attach -t run-pane', 'run #1'])
+  await ui.unmount()
+})
+
+test('where tmux is missing the command runs as a process of the mod', async ($, on) => {
+  const machine = machineOf({ hasTmux: false })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+  await gt($, 'npm run lint')
+
+  expect(machine.spawned).toHaveLength(2)
+  // Asked once.
+  expect(machine.calls.filter(argv => argv[0] === 'tmux')).toEqual([['tmux', '-V']])
+})
+
+test('"multiplexer": false keeps the hidden terminals away too', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, settings: '{"multiplexer":false}' })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+
+  expect(machine.spawned).toHaveLength(1)
+  expect(machine.calls).toEqual([])
+})
+
+test('leaving the session ends the hidden server; a /clear leaves it', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, screen: finishing() })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm test')
+
+  await $.session.end(ending('clear'))
+  expect(machine.calls.some(argv => argv.includes('kill-server'))).toBe(false)
+  await $.session.end(ending('prompt_input_exit'))
+  expect(machine.calls).toContainEqual(['tmux', '-L', 'run-pane', 'kill-server'])
+})
+
+test('/shell does not use the hidden server: nobody would see that pane', async ($, on) => {
+  const machine = machineOf({ hasTmux: true })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'shell', args: '' })
+
+  expect(machine.calls.some(argv => argv[0] === 'tmux')).toBe(false)
 })

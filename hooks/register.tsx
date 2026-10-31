@@ -14,9 +14,9 @@ import {
   WRAPPER,
 } from './run'
 import type { PartKind, RunStatus } from './run'
-import { detectMux, driver, echoes, readPane } from './mux'
+import { detectMux, driver, echoes, HIDDEN_ATTACH, HIDDEN_SOCKET, isTmuxPane, readPane, selectArgv, TMUX_VERSION } from './mux'
 import type { Mux } from './mux'
-import { hasControls, ITERM_PATH, NOT_MACOS, oneLine, osascriptArgv } from './shell'
+import { hasControls, ITERM_PATH, lineArgv, NOT_MACOS, oneLine, osascriptArgv } from './shell'
 import type { TerminalApp } from './shell'
 
 const PANE = 'run'
@@ -72,6 +72,8 @@ const runs: Run[] = []
 let lastPane: { mux: Mux; id: string } | undefined
 // Every pane this mod made, for runs and for /shell: they close when the session ends.
 const opened = new Map<string, Mux>()
+// Whether a window of the hidden tmux server was made, so there is a server to end with the session.
+let isHiddenUsed = false
 const hints = new Map<string, string[]>()
 let seq = 0
 let isRedrawQueued = false
@@ -207,8 +209,46 @@ async function findMux($: EngineInterface): Promise<Mux | undefined> {
   return detectMux({ herdrEnv, herdrPane, tmux, tmuxPane })
 }
 
+// Whether tmux is installed, asked once: the hidden terminals need it, and without it a run is a process of
+// the mod, as before.
+let hasTmux: Promise<boolean> | undefined
+
+// Where a run goes: a pane of the person's multiplexer, else a window of the hidden tmux server; none
+// without tmux either.
+async function findBackend($: EngineInterface): Promise<Mux | undefined> {
+  const mux = await findMux($)
+  if (mux) return mux
+  if ((await settings($)).multiplexer === false) return undefined
+  hasTmux ??= $.process.run(TMUX_VERSION, { timeoutMs: 3_000 }).then(
+    ran => ran.exitCode === 0,
+    () => false,
+  )
+  return (await hasTmux) ? 'hidden' : undefined
+}
+
 const MUX_MS = 5_000
 const GONE_POLLS = 3
+
+// What the person types to look into the hidden terminals (and what /rp says where no window can be opened).
+const ATTACH_LINE = HIDDEN_ATTACH.replace(/^exec /, '')
+
+// Opens a terminal window on the hidden tmux server, at the run's window, so what is typed there reaches the
+// command: an editor, a prompt. macOS only; elsewhere the line to type is the answer.
+async function attach($: EngineInterface, run: Run): Promise<string> {
+  const way = `Type this in a terminal to attach (Ctrl+B d leaves it): ${ATTACH_LINE}`
+  try {
+    if (run.mux !== 'hidden' || !run.pane || !isTmuxPane(run.pane)) return 'This run is not in a hidden terminal.'
+    await $.process.run(selectArgv(run.pane), { timeoutMs: MUX_MS }).catch(() => undefined)
+    const system = await $.process.run(['uname', '-s'], { timeoutMs: 3_000 }).catch(() => undefined)
+    if (system?.stdout.trim() !== 'Darwin') return way
+    const app: TerminalApp = (await $.fs.exists(ITERM_PATH)) ? 'iTerm' : 'Terminal'
+    const made = await $.process.run(lineArgv(app, HIDDEN_ATTACH, `run #${run.id}`), { timeoutMs: 15_000 })
+    if (made.exitCode === 0) return `Attached to #${run.id} in ${app}. Ctrl+B d leaves it.`
+    return `Could not open a window in ${app}: ${oneLine(made.stderr || made.stdout) || `osascript exited with ${made.exitCode}`}. ${way}`
+  } catch (error) {
+    return `Could not open a terminal window: ${oneLine(error instanceof Error ? error.message : String(error)) || 'osascript did not start'}. ${way}`
+  }
+}
 
 async function closePane($: EngineInterface, mux: Mux, pane: string): Promise<void> {
   opened.delete(pane)
@@ -271,6 +311,7 @@ async function splitPane($: EngineInterface, mux: Mux, cwd: string): Promise<str
   // The last pane may have been closed since: then start a column again.
   const id = (parent ? await split(parent).catch(() => undefined) : undefined) ?? (await split(undefined))
   if (id) {
+    if (mux === 'hidden') isHiddenUsed = true
     lastPane = { mux, id }
     opened.set(id, mux)
   }
@@ -357,7 +398,7 @@ async function start($: EngineInterface, cmd: string): Promise<Run> {
   const stopped = new Promise<'stop'>(resolve => {
     run.release = () => resolve('stop')
   })
-  const mux = await findMux($)
+  const mux = await findBackend($)
   // One line, as typed at a prompt: a command of several lines would be run line by line.
   if (mux && !cmd.includes('\n') && (await startInPane($, run, mux, stopped))) return run
   void (async () => {
@@ -444,7 +485,7 @@ async function runPrompt($: EngineInterface, args: string, isFullscreen: boolean
   // In a multiplexer pane the command is in front of the person already: the Run pane stays shut, and
   // /rp alone opens it. The reply is the command as `! cmd` shows it, no more. If no pane could be made the run is a process of this mod, and the pane shows it.
   const run = cmd === '' ? undefined : await start($, cmd)
-  if (run?.mux) return `$ ${cmd}`
+  if (run?.mux && run.mux !== 'hidden') return `$ ${cmd}`
   const placed = await $.ui.open({ id: PANE, title: 'Run', focus: true, closeOnEscape: true, columns: DOCK_COLUMNS })
   showStatus($)
   // Docked beside the transcript only in the fullscreen layout; otherwise it sits above the prompt.
@@ -524,6 +565,10 @@ export const register: Register = on => {
       ...runs.filter(run => run.status === 'running' && !(isLeaving && run.pane)).map(run => stop($, run)),
       ...(isLeaving ? [...opened].map(([pane, mux]) => closePane($, mux, pane)) : []),
     ])
+    // The hidden server is the mod's own: with the session gone, nothing is left to follow it.
+    if (isLeaving && isHiddenUsed) {
+      await $.process.run(['tmux', '-L', HIDDEN_SOCKET, 'kill-server'], { timeoutMs: MUX_MS }).catch(() => undefined)
+    }
     return next(e)
   })
 
@@ -611,6 +656,9 @@ export const register: Register = on => {
             $.ui.invalidate('ui.render')
           }}
         />
+        {picked?.mux === 'hidden' && picked.status === 'running' && (
+          <Button key={`attach:${picked.id}`} label="Attach" onPress={() => void attach($, picked).then(text => $.ui.toast(text))} />
+        )}
         <Button key={`shell`} label="Shell" onPress={() => void openShell($).then(text => $.ui.toast(text))} />
         <Button key={`close`} label="Close pane" onPress={() => void $.ui.close({ id: PANE })} />
       </Box>
@@ -667,6 +715,7 @@ export const register: Register = on => {
             <Text dimColor wrap="truncate-end">
               #{picked.id} output ({picked.log.size} lines{back > 0 ? `, ${back} back` : ''})
             </Text>
+            {picked.mux === 'hidden' && picked.status === 'running' && <Text dimColor>In a hidden terminal: Attach to type into it (an editor, a prompt).</Text>}
             <Box flexDirection="column-reverse" flexGrow={1} flexShrink={1} overflow="hidden">
             {/* First, so at the bottom: it takes the room the lines leave, which keeps a short output at the top. */}
             <Box flexGrow={1} />

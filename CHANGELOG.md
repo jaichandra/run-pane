@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Outside herdr and tmux, `/rp` now runs each command in a window of a hidden tmux server of its own (`tmux -L run-pane`), so a command that needs a terminal (`vi`, `less`, a prompt) has one. The Run pane follows the window as it does a multiplexer pane, and a running run has an **Attach** button: on macOS it opens an iTerm or Terminal window on the hidden server, elsewhere it toasts the line to type (`tmux -L run-pane attach -t run-pane`). Without tmux, or with `"multiplexer": false`, commands run as processes of the plugin as before. The hidden server ends with the session; a `/clear` keeps it. `/shell` is unchanged.
 - The Run pane no longer scrolls as a whole: its output scrolls on its own (wheel or keys, stopping at the first and last line) while the commands and the row of buttons stay in place. End jumps back to the newest line.
 - The Run pane has one row of buttons, at its end, instead of the same row above and below the output; Top and the dim help line under the first row are gone (Stop's wait is in the README). Docs now say **Run pane** for the plugin's own pane and **terminal pane** for the herdr or tmux split a command runs in.
 
