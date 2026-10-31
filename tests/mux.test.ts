@@ -122,3 +122,15 @@ test('the hidden tmux server is the same driver on a socket of its own, with the
   expect(isTmuxPane('%12')).toBe(true)
   for (const text of ['', '%', '%1;x', '1', '%1\n', '$(x)']) expect(isTmuxPane(text), text).toBe(false)
 })
+
+test('a prompt of two lines goes whole once the command is over, the output above it stays', () => {
+  const info = (time: string) => `# jail @ host in ~/app on git:master x [${time}] `
+  const shown = ['', info('7:39:41'), '$ cat a.json', '{', '  "a": 1', '}', '', info('7:42:36'), '$ '].join('\n')
+  expect(readPane(shown, 'cat a.json', true)).toBe('{\n  "a": 1\n}')
+  // Still running: nothing is taken off.
+  expect(readPane(shown.replace(/\n\n#[^\n]*\n\$ $/, '\n'), 'cat a.json', false)).toBe('{\n  "a": 1\n}')
+  // A prompt of one line has no head to take off, so an output that ends in a `# note` keeps it; one that
+  // has a head the same way above the command line does lose it (the shape is all there is to go by).
+  expect(readPane('$ ls\na\n\n# note\n$ ', 'ls', true)).toBe('a\n\n# note')
+  expect(readPane('# first\n$ ls\na\n\n# note\n$ ', 'ls', true)).toBe('a')
+})

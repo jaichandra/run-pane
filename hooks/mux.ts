@@ -164,8 +164,22 @@ const isEcho = (line: string, cmd: string): boolean => {
 /** How many lines of the pane show `cmd` typed at a prompt. A command typed again has one more than before. */
 export const echoes = (shown: string, cmd: string): number => screenLines(shown).filter(line => isEcho(line, cmd)).length
 
+const firstWord = (line: string): string => line.trim().split(/\s+/)[0] ?? ''
+
+/** The lines of a prompt's head (an info line above the line the command is typed on) that follow the output once
+ * the command is over: the lines that head the prompt the command was typed at (the non-blank ones right above it)
+ * are expected again, after a blank line, in the same shape. At most four lines. */
+function promptHead(lines: readonly string[], typed: number, out: readonly string[]): number {
+  const head: string[] = []
+  for (let at = typed - 1; at >= 0 && head.length <= 4 && (lines[at] as string).trim() !== ''; at--) head.unshift(lines[at] as string)
+  if (head.length === 0 || head.length > 4 || head.length >= out.length) return 0
+  const tail = out.slice(out.length - head.length)
+  const isBlankBefore = out[out.length - head.length - 1] === ''
+  return isBlankBefore && tail.every((line, at) => firstWord(line) === firstWord(head[at] as string)) ? head.length : 0
+}
+
 /** What a pane showed, as the command's output: what follows the last line that has the command typed at a
- * prompt, and, once the command is over, without the prompt that follows it. */
+ * prompt, and, once the command is over, without the prompt that follows it (all of its lines). */
 export function readPane(shown: string, cmd: string, isOver: boolean): string {
   const lines = screenLines(shown)
   let typed = -1
@@ -173,7 +187,10 @@ export function readPane(shown: string, cmd: string, isOver: boolean): string {
   const out = lines.slice(typed + 1)
   while (out.length > 0 && out[out.length - 1] === '') out.pop()
   // The shell's prompt is the last line once it is back; a command over leaves no other line after its output.
-  if (isOver && typed >= 0) out.pop()
+  if (isOver && typed >= 0) {
+    out.pop()
+    out.length -= promptHead(lines, typed, out)
+  }
   while (out.length > 0 && out[out.length - 1] === '') out.pop()
   return out.join('\n')
 }
