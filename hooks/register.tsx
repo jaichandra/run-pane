@@ -71,6 +71,10 @@ const STYLE: Record<Exclude<PartKind, 'plain' | 'url'>, { color?: string; dimCol
   warning: { color: 'warning' },
 }
 
+// A button's face: the label on a background, so it reads as a control. The colours are theme keys, so they follow the
+// person's theme (`inverseText` is the text meant for a coloured ground).
+const TONES = { neutral: 'inactive', primary: 'suggestion', danger: 'error' } as const
+
 const folderName = (cwd: string): string => cwd.split('/').filter(Boolean).pop() ?? cwd
 
 const runs: Run[] = []
@@ -254,23 +258,53 @@ const SCREEN_ROWS = 50
 
 // What the person types to look into the hidden terminals (and what /rp says where no window can be opened).
 
-// Opens a terminal window on the hidden tmux server, at the run's window, so what is typed there reaches the
-// command: an editor, a prompt. macOS only; elsewhere the line to type is the answer.
-async function attach($: EngineInterface, run: Run): Promise<string> {
+// Opens a terminal window on the hidden tmux server, at a pane's window, so what is typed there reaches what runs in
+// it: an editor, a prompt. macOS only; elsewhere the line to type is the answer.
+async function attachPane($: EngineInterface, pane: string, title: string): Promise<string> {
   const way = `Type this in a terminal to attach (Ctrl+B d leaves it): ${HIDDEN_ATTACH}`
   try {
-    if (run.mux !== 'hidden' || !run.pane || !isTmuxPane(run.pane)) return 'This run is not in a hidden terminal.'
+    if (!isTmuxPane(pane)) return 'This is not in a hidden terminal.'
     const alive = await $.process.run(HIDDEN_ALIVE, { timeoutMs: MUX_MS }).catch(() => undefined)
-    if (alive?.exitCode !== 0) return `The hidden terminal has ended (its shells were exited, or the session that made it ended): run #${run.id} again with Restart.`
-    await $.process.run(selectArgv(run.pane), { timeoutMs: MUX_MS }).catch(() => undefined)
+    if (alive?.exitCode !== 0) return 'The hidden terminal has ended (its shells were exited, or the session that made it ended): run the command again.'
+    await $.process.run(selectArgv(pane), { timeoutMs: MUX_MS }).catch(() => undefined)
     const system = await $.process.run(['uname', '-s'], { timeoutMs: 3_000 }).catch(() => undefined)
     if (system?.stdout.trim() !== 'Darwin') return way
     const app = await terminalApp($)
-    const made = await $.process.run(lineArgv(app, HIDDEN_ATTACH, `run #${run.id}`), { timeoutMs: 15_000 })
-    if (made.exitCode === 0) return `Attached to #${run.id} in ${app}. Ctrl+B d leaves it.`
+    const made = await $.process.run(lineArgv(app, HIDDEN_ATTACH, title), { timeoutMs: 15_000 })
+    if (made.exitCode === 0) return `Attached to ${title} in ${app}. Ctrl+B d leaves it.`
     return `${osascriptFailure(app, made.stdout, made.stderr, made.exitCode)} ${way}`
   } catch (error) {
     return `Could not open a terminal window: ${oneLine(error instanceof Error ? error.message : String(error)) || 'osascript did not start'}. ${way}`
+  }
+}
+
+async function attach($: EngineInterface, run: Run): Promise<string> {
+  if (run.mux !== 'hidden' || !run.pane) return 'This run is not in a hidden terminal.'
+  return (await attachPane($, run.pane, `run #${run.id}`)).replace('run the command again', `run #${run.id} again with Restart`)
+}
+
+// "Open in shell" on a run: where it runs in a terminal already, that terminal; for a process of the plugin, which has
+// none to attach to, a shell in its folder with its command line typed at the prompt and not run (a second copy of a
+// server could clash with the first), so it can be run there or changed first.
+async function openInShell($: EngineInterface, run: Run): Promise<string> {
+  if (run.mux === 'hidden') return attach($, run)
+  if (run.mux) return `#${run.id} runs in a ${run.mux === 'iterm' ? 'iTerm2' : run.mux} pane beside Claude Code already.`
+  if (!(await canHide($))) return `${await openShell($)} Type: ${run.cmd}`
+  const d = driver('hidden')
+  try {
+    const made = await $.process.run(d.split({ direction: 'right', cwd: run.cwd, focus: false }), { cwd: run.cwd, timeoutMs: MUX_MS })
+    const pane = made.exitCode === 0 ? d.paneId(made.stdout) : undefined
+    if (!pane) return `Could not open a shell: ${oneLine(made.stderr || made.stdout) || 'tmux did not make a window'}`
+    isHiddenUsed = true
+    opened.set(pane, 'hidden')
+    await waitForPrompt($, 'hidden', pane)
+    // The line is typed, not sent: send-keys without its Enter.
+    const [typed] = d.type(pane, run.cmd)
+    if (typed) await $.process.run(typed, { timeoutMs: MUX_MS })
+    const said = await attachPane($, pane, `#${run.id} ${folderName(run.cwd)}`)
+    return run.status === 'running' ? `${said} #${run.id} is still running in the Run pane: its command is typed there, not run.` : `${said} Its command is typed there, not run.`
+  } catch (error) {
+    return `Could not open a shell: ${oneLine(error instanceof Error ? error.message : String(error))}`
   }
 }
 
@@ -708,6 +742,12 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const tags = $.ui.resolve(e)
     const { Box, Text, Button } = tags
+    // What a button looks like: its label on a background, with a space each side.
+    const face = (label: string, tone: keyof typeof TONES = 'neutral'): JSX.Element => (
+      <Text color="inverseText" backgroundColor={TONES[tone]}>
+        {` ${label} `}
+      </Text>
+    )
     const Input = 'Input' in tags ? tags.Input : undefined
     await read($, rev)
     const cwd = await $.session.cwd()
@@ -728,8 +768,10 @@ export const register: Register = on => {
     const rows = Math.max(1, e.props.scroll.bodyRows)
     // The rows the output box has: the pane less what is drawn around it, counted high where it
     // wraps (the hint, the buttons), so scrolling stops with the first line at the top, not past it.
+    // The suggestions are chips that wrap: about as many rows as their width fills.
+    const hintRows = hints.length > 0 ? Math.max(1, Math.ceil((4 + hints.reduce((sum, cmd) => sum + cmd.length + 3, 0)) / Math.max(20, e.props.bodyColumns - 2))) : 0
     const chrome =
-      1 + (e.props.placement === 'inline' ? 4 : 0) + 1 + (hints.length > 0 ? hints.length + 1 : 0) + 1 + Math.max(1, runs.length) + 3 + (e.props.bodyColumns < 80 ? 2 : 1)
+      1 + (e.props.placement === 'inline' ? 4 : 0) + 1 + hintRows + Math.max(1, runs.length) + 3 + (e.props.bodyColumns < 80 ? 2 : 1)
     const visible = Math.max(1, rows - chrome)
     newest = Math.max(0, (picked?.log.size ?? 0) - visible)
     back = Math.min(back, newest)
@@ -780,36 +822,46 @@ export const register: Register = on => {
       <Box flexWrap="wrap" columnGap={1} flexShrink={0}>
         {picked?.status === 'running' && (
           <Button
+            plain
             key={`${picked.isStopping ? 'force' : 'stop'}:${picked.id}`}
             label={picked.isStopping ? 'Force kill' : 'Stop (Ctrl+C)'}
             onPress={() => {
               if (picked.isStopping) picked.isForced = true
               else void stop($, picked)
             }}
-          />
+          >
+            {face(picked.isStopping ? 'Force kill' : 'Stop (Ctrl+C)', 'danger')}
+          </Button>
         )}
         {picked && picked.status !== 'running' && (
           <Button
+            plain
             key={`restart:${picked.id}`}
             label="Restart"
             onPress={() => {
               runs.splice(runs.indexOf(picked), 1)
               void start($, picked.cmd)
             }}
-          />
+          >
+            {face('Restart', 'primary')}
+          </Button>
         )}
         {picked && (
           <Button
+            plain
             key={`clear:${picked.id}`}
             label="Clear"
             onPress={() => {
               picked.log.clear()
               redraw($)
             }}
-          />
+          >
+            {face('Clear')}
+          </Button>
         )}
         {picked && picked.status !== 'running' && (
           <Button
+            plain
             key={`remove:${picked.id}`}
             label="Remove"
             onPress={() => {
@@ -817,18 +869,17 @@ export const register: Register = on => {
               dismiss($, picked)
               redraw($)
             }}
-          />
+          >
+            {face('Remove')}
+          </Button>
         )}
-        <Button
-          key={`end`}
-          label="End"
-          onPress={() => {
-            back = 0
-            $.ui.invalidate('ui.render')
-          }}
-        />
-        <Button key={`shell`} label="Shell" onPress={() => void openShell($).then(text => $.ui.toast(text))} />
-        <Button key={`close`} label="Close pane" onPress={() => void $.ui.close({ id: PANE })} />
+        {/* The selected run's terminal, or a shell with its command; with no run, a shell in the folder. */}
+        <Button plain key={`shell`} label="Open in shell" onPress={() => void (picked ? openInShell($, picked) : openShell($)).then(text => $.ui.toast(text))}>
+          {face('Open in shell', 'primary')}
+        </Button>
+        <Button plain key={`close`} label="Close pane" onPress={() => void $.ui.close({ id: PANE })}>
+          {face('Close pane')}
+        </Button>
       </Box>
     )
 
@@ -857,14 +908,15 @@ export const register: Register = on => {
           <Text dimColor>Type &gt; &lt;command&gt; to start one.</Text>
         )}
         {hints.length > 0 && (
-          <Box flexDirection="column">
-            <Text dimColor>Suggestions</Text>
+          <Box flexWrap="wrap" columnGap={1}>
+            <Text dimColor>Try</Text>
             {hints.map(cmd => (
-              <Button plain key={`hint:${cmd}`} label={cmd} onPress={() => go(cmd)} />
+              <Button plain key={`hint:${cmd}`} label={cmd} onPress={() => go(cmd)}>
+                {face(cmd)}
+              </Button>
             ))}
           </Box>
         )}
-        <Text dimColor> </Text>
         {runs.length === 0 && <Text dimColor>Nothing running. Pick a suggestion or type a command.</Text>}
         {runs.map(run => (
           <Box key={`run:${run.id}`}>
@@ -875,8 +927,11 @@ export const register: Register = on => {
               onPress={() => void update($, selected, () => run.id)}
             />
             <Text dimColor> {run.isStopping && run.status === 'running' ? 'stopping\u2026' : statusWords(run.status, run.code)}</Text>
+            {run.mux === 'hidden' && run.status === 'running' && <Text> </Text>}
             {run.mux === 'hidden' && run.status === 'running' && (
-              <Button key={`attach:${run.id}`} label="Attach" onPress={() => void attach($, run).then(text => $.ui.toast(text))} />
+              <Button plain key={`attach:${run.id}`} label="Attach" onPress={() => void attach($, run).then(text => $.ui.toast(text))}>
+                {face('Attach', 'primary')}
+              </Button>
             )}
             {run.isInteractive && run.mux && run.mux !== 'hidden' && run.status === 'running' && <Text dimColor> in a terminal pane</Text>}
           </Box>

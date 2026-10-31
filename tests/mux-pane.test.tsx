@@ -317,6 +317,8 @@ test('a run that ignores Ctrl+C has its pane closed', async ($, on) => {
   await ui.press({ key: 'stop:1' })
   await until(() => machine.calls.some(argv => argv[2] === 'close'))
   expect(machine.calls).toContainEqual(['herdr', 'pane', 'close', 'w1:p1'])
+  // The run reads stopped once its poll sees the pane gone, and the pane redraws a moment after.
+  await untilOver($)
   expect(await ui.find({ type: 'Text', text: /stopped/ })).toBeDefined()
   await ui.unmount()
 })
@@ -817,4 +819,55 @@ test('what a full-screen program shows is the run output while it holds the scre
   await untilOver($)
   expect(await read()).toContain('(done)')
   expect(await read()).not.toContain('-- INSERT --')
+})
+
+test('Open in shell on a process of the plugin opens a window on a new hidden shell with its command typed and not run', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, settings: '{}' })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm run dev')
+  expect(machine.spawned).toHaveLength(1)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'shell' })
+  await until(() => machine.toasts.length > 0)
+  const split = machine.calls.find(argv => argv[0] === 'sh' && argv[2]?.includes('new-window'))
+  expect(split?.slice(3)).toEqual(['sh', '/w/sample-app'])
+  // The line is typed with send-keys -l, and nothing presses Enter.
+  expect(machine.calls.find(argv => argv.includes('-l'))).toEqual(['tmux', '-L', 'run-pane', 'send-keys', '-t', '%1', '-l', '--', 'npm run dev'])
+  expect(machine.calls.some(argv => argv.includes('Enter'))).toBe(false)
+  expect(machine.calls).toContainEqual(['tmux', '-L', 'run-pane', 'select-window', '-t', '%1'])
+  const window = machine.calls.find(argv => argv[0] === 'osascript')
+  expect(window?.slice(3)).toEqual(['--', 'env -u TMUX tmux -L run-pane attach -t run-pane', '#1 sample-app'])
+  expect(machine.toasts[0]).toContain('#1 is still running in the Run pane: its command is typed there, not run.')
+  await ui.unmount()
+})
+
+test('Open in shell on a run in a hidden terminal is the Attach, and in a pane beside Claude Code it says so', async ($, on) => {
+  const busy = { screen: (cmd: string) => ({ text: `${PROMPT} ${cmd}\n`, isBusy: true }) }
+  const hidden = machineOf({ hasTmux: true, settings: '{}', ...busy })
+  engine(on, hidden)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'vi notes.txt')
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'shell' })
+  await until(() => hidden.calls.some(argv => argv[0] === 'osascript'))
+  expect(hidden.calls.find(argv => argv[0] === 'osascript')?.slice(3)).toEqual(['--', 'env -u TMUX tmux -L run-pane attach -t run-pane', 'run #1'])
+  // No second window made for it.
+  expect(hidden.calls.filter(argv => argv[0] === 'sh' && argv[2]?.includes('new-window'))).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('the Attach button has a space before it in the run row and a background', async ($, on) => {
+  const machine = machineOf({ hasTmux: true, settings: '{}', screen: cmd => ({ text: `${PROMPT} ${cmd}\n`, isBusy: true }) })
+  engine(on, machine)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'vi package.json')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const row = await ui.find({ type: 'Box', text: /vi package\.json.*running.*Attach/ })
+  // `vi package.json running` then a space, then the button: "running [ Attach ]".
+  expect(row?.text).toMatch(/running\s+Attach/)
+  expect((await ui.find({ type: 'Text', text: ' Attach ' }))?.props?.backgroundColor).toBe('suggestion')
+  await ui.unmount()
 })

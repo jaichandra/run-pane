@@ -26,7 +26,7 @@ const gt = async ($: Parameters<Parameters<typeof test>[1]>[0], args: string) =>
 // Stands for the engine beneath the mod: the calls the mod makes are answered here.
 function engine(
   on: On,
-  process: { calls: string[][]; lines: string[]; remote?: string; opened?: string[]; spawns?: { argv: readonly string[]; env?: Record<string, string> | undefined }[]; existing?: string[] },
+  process: { calls: string[][]; lines: string[]; remote?: string; opened?: string[]; toasts?: string[]; spawns?: { argv: readonly string[]; env?: Record<string, string> | undefined }[]; existing?: string[] },
   files: Record<string, string> = { 'package.json': '{"scripts":{"dev":"vite","test":"vitest"}}' },
 ) {
   on('command.register', (_, e) => ({ value: { command: e.name } }))
@@ -38,6 +38,10 @@ function engine(
     return { value: { isPlaced: true } }
   })
   on('ui.close', () => ({ value: undefined }))
+  on('ui.toast', (_, e) => {
+    process.toasts?.push(e.text)
+    return { value: undefined }
+  })
   on('ui.status', (_, e) => {
     status.push(e.text)
     return { value: undefined }
@@ -140,9 +144,11 @@ test('the buttons are one row below the output', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ key: 'stop:1' })).toBeDefined()
   const keys = (await ui.findAll({ type: 'Button' })).map(button => button.key)
-  for (const key of ['stop:1', 'clear:1', 'end', 'shell', 'close']) {
+  for (const key of ['stop:1', 'clear:1', 'shell', 'close']) {
     expect(keys.filter(one => one === key), key).toHaveLength(1)
   }
+  // Scrolling down to the last line follows the output again, so there is no End button, nor a Top.
+  expect(keys).not.toContain('end')
   expect(keys).not.toContain('top')
   // Ctrl+C is part of Stop, not a button of its own.
   expect(keys.some(key => key?.startsWith('int:'))).toBe(false)
@@ -394,4 +400,49 @@ test('a command that needs a terminal where there is none runs without one and s
 
   const got = String((await $.tool.call({ tool: 'mcp__run-pane__run_output' })).result)
   expect(got).toContain('no terminal to give it here')
+})
+
+test('buttons have a background so they read as controls: the label on a coloured ground, a space each side', async ($, on) => {
+  const process = { calls: [] as string[][], lines: ['ready\n'] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm run dev')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const face = async (label: string) => (await ui.find({ type: 'Text', text: ` ${label} ` }))?.props
+  expect(await face('Stop (Ctrl+C)')).toMatchObject({ color: 'inverseText', backgroundColor: 'error' })
+  expect(await face('Clear')).toMatchObject({ color: 'inverseText', backgroundColor: 'inactive' })
+  expect(await face('Open in shell')).toMatchObject({ color: 'inverseText', backgroundColor: 'suggestion' })
+  expect(await face('Close pane')).toMatchObject({ backgroundColor: 'inactive' })
+  // The Shell button is the Open in shell one.
+  expect(await face('Shell')).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the suggestions are chips in one wrapping row, not a line each', async ($, on) => {
+  const process = { calls: [] as string[][], lines: [] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const boxes = await ui.findAll({ type: 'Box' })
+  const row = boxes.find(box => box.props?.flexWrap === 'wrap' && /^Try.*npm run dev.*npm run test/.test(box.text ?? ''))
+  expect(row).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: ' npm run dev ' }))?.props?.backgroundColor).toBe('inactive')
+  expect(await ui.find({ key: 'hint:npm run dev' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Open in shell on a process of the plugin, with no tmux, opens a shell in its folder and says what to type', async ($, on) => {
+  const process = { calls: [] as string[][], lines: ['ready\n'], toasts: [] as string[] }
+  engine(on, process)
+  await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
+  await gt($, 'npm run dev')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'shell' })
+  await new Promise<void>(resolve => setTimeout(resolve, 30))
+  expect(process.calls.some(argv => argv[0] === 'osascript')).toBe(true)
+  expect(process.toasts.some(text => text.endsWith('Type: npm run dev'))).toBe(true)
+  await ui.unmount()
 })

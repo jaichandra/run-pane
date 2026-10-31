@@ -66,10 +66,10 @@ Answer `y` to add the marketplace, then pick a scope (the first, user scope, kee
 
 - the folder's name;
 - a command field, `$ `: type a command and press Enter;
-- **Suggestions**, one button each (press to run): `npm run <script>` for every script in the folder's `package.json` (`dev`, `start`, `serve`, `watch`, `test`, `build` and `lint` first), `cargo run` and `cargo test` where there is a `Cargo.toml`, and `make <target>` for each plain target of a `Makefile`; ten at most;
+- **Suggestions**, as buttons in one wrapping row (press to run): `npm run <script>` for every script in the folder's `package.json` (`dev`, `start`, `serve`, `watch`, `test`, `build` and `lint` first), `cargo run` and `cargo test` where there is a `Cargo.toml`, and `make <target>` for each plain target of a `Makefile`; ten at most;
 - the runs, newest last: `●` running, `✓` exited with 0, `✗` exited with an error or could not start, `■` stopped; press one to see its output;
 - the output of the selected run, the last 2,000 lines of it, **in the colours and styles the command printed** (16, 256 and true colour, bold, dim, italic, underline, inverse and strikethrough: tools that colour only for a terminal are asked to anyway, with `FORCE_COLOR=1`). A line the command did not style is coloured by what it looks like: `# notes` dimmed, `▶` banners green, command lines (`npm`, `docker`, `make`, `git`, ...) and warnings in the warning colour, errors in the error colour, headings that end in a colon bold. **URLs and files are presses**: a URL (`http` or `https`) opens in the browser, and a path that exists (`src/app.ts:12:5`, `./run.sh`, `~/notes/a.md`, resolved from the run's folder) opens with what your system opens it with (`open` on macOS, `xdg-open` elsewhere). A line a progress bar keeps redrawing shows its last state;
-- one row of buttons, last, so it stays in view while the Run pane follows the output (End brings the following back after you scrolled up).
+- one row of buttons, last, so it stays in view while the Run pane follows the output (scroll back down to the last line and it follows the output again). Every button has a coloured background, so it reads as a control.
 
 The buttons:
 
@@ -79,11 +79,10 @@ The buttons:
 | Restart | Runs a finished run's command again. |
 | Clear | Empties the selected run's output. |
 | Remove | Takes a finished run off the list. |
-| End | Scrolls the Run pane to its last row and follows new output again. |
-| Shell | The same as `/shell`. |
+| Open in shell | Opens the selected run in a shell. A run in a hidden terminal: the same as Attach. A run in a pane beside Claude Code: says so. A process of the plugin (it has no terminal to attach to): a terminal window with a shell in its folder and its command typed at the prompt, **not run**, so you can run it there or change it first (a second copy of a server could clash with the first). With no run selected, the same as `/shell`. |
 | Close pane | Closes the Run pane. Esc does the same. Runs keep going. |
 
-Commands run through `sh -lc` (a login shell, so `/etc/profile` and `~/.profile` apply) in the folder the session is in. The Run pane scrolls as a whole (mouse wheel, or the keys while it has the focus), follows new output while it is scrolled to the bottom, and stays where you left it once you scroll up; End brings the following back. With the pane focused, Tab and the arrow keys walk its buttons, and Esc closes it.
+Commands run through `sh -lc` (a login shell, so `/etc/profile` and `~/.profile` apply) in the folder the session is in. The Run pane scrolls as a whole (mouse wheel, or the keys while it has the focus), follows new output while it is scrolled to the bottom, and stays where you left it once you scroll up; scrolling back to the last line follows it again. With the pane focused, Tab and the arrow keys walk its buttons, and Esc closes it.
 
 The list holds 12 runs at most; the oldest finished ones drop off first. Runs still going when the session ends are stopped the same way Stop does it.
 
