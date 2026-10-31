@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Buttons are pills.** Half-block ends (`▐ label ▌`) in the button's colour make each one read as rounded in any font. The suggestions say what they share once (a dim `npm run`, `make` or `cargo`, then `dev`, `start:ci`, `test`...), so each is short and ten fit in about two rows, and they are coloured by what they do: accent for running, serving and starting, green for testing, grey for the rest. Pressing one still runs the whole command.
 - **Fixed: commands no longer start with `FORCE_COLOR=1`.** It was added for the colours, but it changes the text a command prints, and a script that reads its tools' output for a phrase stopped finding it: `sandbox start ci` waits for `compiled successfully` in webpack's output before it prints the URL banner, and with colour on the phrase had escape codes inside it, so the banner never came. Commands run as they would in a pipe again; `"forceColor": true` in `hooks/run-pane.json` (or `FORCE_COLOR=1` in the command) brings colour back where it is safe.
 - Drawing the output no longer waits on the file system. Which of the paths in the output are files (to be links) is found in the background, once for each path and at most 40 at a time, and the pane is drawn again when one is; before, each drawing asked for every new path-like word first (docker prints one on most lines), which could hold the output back. A file system that does not answer now only means no file links.
 - A vertical gap between the suggestion chips, so rows of them do not run together.

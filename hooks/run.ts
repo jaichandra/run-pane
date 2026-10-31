@@ -168,6 +168,34 @@ export function makeTargets(text: string): string[] {
   return found.map(target => `make ${target}`)
 }
 
+export type Suggestion = { cmd: string; label: string }
+
+/** What a suggested command is for, to colour its button: running something (a dev server, a start), testing it, or
+ * anything else. Told by the last word (`npm run start:ci`, `make test`, `cargo run`). */
+export function suggestionKind(cmd: string): 'run' | 'test' | 'other' {
+  const name = cmd.trim().split(/\s+/).pop() ?? ''
+  if (/^(dev|start|serve|watch|run|up)\b/i.test(name)) return 'run'
+  if (/^(test|e2e|spec|check|verify)\b/i.test(name)) return 'test'
+  return 'other'
+}
+
+const TOOL_PREFIX = /^(npm run|pnpm run|yarn|pnpm|bun run|make|cargo) (\S+)$/
+
+/** The suggestions in groups that share what they start with: `npm run` once, then `dev`, `start:ci`, `test`...
+ * A command that starts with none of the tools is a group of one with no prefix. */
+export function groupSuggestions(cmds: readonly string[]): { prefix: string; items: Suggestion[] }[] {
+  const groups: { prefix: string; items: Suggestion[] }[] = []
+  for (const cmd of cmds) {
+    const match = TOOL_PREFIX.exec(cmd)
+    const prefix = match?.[1] ?? ''
+    const item = { cmd, label: match?.[2] ?? cmd }
+    const last = groups[groups.length - 1]
+    if (last && last.prefix === prefix && prefix !== '') last.items.push(item)
+    else groups.push({ prefix, items: [item] })
+  }
+  return groups
+}
+
 export type ProjectFiles = { packageJson?: string; makefile?: string; hasCargo?: boolean; extra?: readonly string[] }
 
 export function suggestions(files: ProjectFiles): string[] {

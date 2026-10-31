@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   descendants,
+  groupSuggestions,
   highlight,
   isAtBottom,
   isInteractive,
@@ -14,6 +15,7 @@ import {
   statusMark,
   statusWords,
   stripAnsi,
+  suggestionKind,
   suggestions,
 } from '../hooks/run'
 
@@ -194,4 +196,20 @@ test('editors, pagers, monitors, sessions and REPLs need a terminal; builds, tes
   // What hooks/run-pane.json lists is told too, by first word.
   expect(isInteractive('mytui --x', ['mytui'])).toBe(true)
   expect(isInteractive('mytui --x')).toBe(false)
+})
+
+test('suggestions are grouped by what they start with, so `npm run` is said once', () => {
+  const groups = groupSuggestions(['make seed', 'npm run dev', 'npm run test:ci', 'cargo run', 'cargo test', 'make build', 'docker compose up', 'npm run lint'])
+  expect(groups.map(group => group.prefix)).toEqual(['make', 'npm run', 'cargo', 'make', '', 'npm run'])
+  expect(groups[1]?.items).toEqual([{ cmd: 'npm run dev', label: 'dev' }, { cmd: 'npm run test:ci', label: 'test:ci' }])
+  expect(groups[2]?.items.map(item => item.label)).toEqual(['run', 'test'])
+  // A command of no known tool is a button of its own, whole.
+  expect(groups[4]).toEqual({ prefix: '', items: [{ cmd: 'docker compose up', label: 'docker compose up' }] })
+  expect(groupSuggestions([])).toEqual([])
+})
+
+test('a suggestion is for running, for testing or for anything else, by its last word', () => {
+  for (const cmd of ['npm run dev', 'npm run start:ci', 'npm run serve', 'npm run watch', 'cargo run', 'make up']) expect(suggestionKind(cmd), cmd).toBe('run')
+  for (const cmd of ['npm run test', 'npm run test:libs', 'cargo test', 'make e2e', 'npm run check']) expect(suggestionKind(cmd), cmd).toBe('test')
+  for (const cmd of ['npm run build', 'npm run lint', 'make seed', 'docker compose up --build', 'npm run restart-all']) expect(suggestionKind(cmd), cmd).toBe('other')
 })

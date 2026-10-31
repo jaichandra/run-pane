@@ -299,6 +299,13 @@ async function untilPrinted($: Parameters<Parameters<typeof test>[1]>[0], text: 
   }
 }
 
+// A button's face is a pill: a half block in the button's colour, the label on that colour, a half block. Its props.
+async function faceOf(ui: { find: (query: never) => Promise<unknown> }, label: string): Promise<{ edge?: unknown; label?: Record<string, unknown>; end?: unknown } | undefined> {
+  const pill = (await ui.find({ type: 'Text', text: `\u2590 ${label} \u258c` } as never)) as { children?: { props?: Record<string, unknown> }[] } | undefined
+  if (!pill?.children) return undefined
+  return { edge: pill.children[0]?.props?.color, label: pill.children[1]?.props, end: pill.children[2]?.props?.color }
+}
+
 // The props a part of a line is drawn with: the line is a Text, and each coloured part a Text nested in it.
 async function partOf(ui: { find: (query: never) => Promise<unknown> }, line: RegExp, word: string): Promise<Record<string, unknown> | undefined> {
   const row = (await ui.find({ type: 'Text', text: line } as never)) as { children?: unknown[] } | undefined
@@ -413,34 +420,47 @@ test('a command that needs a terminal where there is none runs without one and s
   expect(got).toContain('no terminal to give it here')
 })
 
-test('buttons have a background so they read as controls: the label on a coloured ground, a space each side', async ($, on) => {
+test('buttons have a background so they read as controls: a pill, its label on a coloured ground with a space each side', async ($, on) => {
   const process = { calls: [] as string[][], lines: ['ready\n'] }
   engine(on, process)
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
   await gt($, 'npm run dev')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  const face = async (label: string) => (await ui.find({ type: 'Text', text: ` ${label} ` }))?.props
-  expect(await face('Stop (Ctrl+C)')).toMatchObject({ color: 'inverseText', backgroundColor: 'error' })
-  expect(await face('Clear')).toMatchObject({ color: 'inverseText', backgroundColor: 'inactive' })
-  expect(await face('Open in shell')).toMatchObject({ color: 'inverseText', backgroundColor: 'suggestion' })
-  expect(await face('Close pane')).toMatchObject({ backgroundColor: 'inactive' })
+  const stop = await faceOf(ui, 'Stop (Ctrl+C)')
+  expect(stop?.label).toMatchObject({ color: 'inverseText', backgroundColor: 'error' })
+  // The half blocks at the ends are in the button's own colour, so it reads as rounded.
+  expect(stop?.edge).toBe('error')
+  expect(stop?.end).toBe('error')
+  expect((await faceOf(ui, 'Clear'))?.label).toMatchObject({ color: 'inverseText', backgroundColor: 'inactive' })
+  expect((await faceOf(ui, 'Open in shell'))?.label).toMatchObject({ color: 'inverseText', backgroundColor: 'suggestion' })
+  expect((await faceOf(ui, 'Close pane'))?.label).toMatchObject({ backgroundColor: 'inactive' })
   // The Shell button is the Open in shell one.
-  expect(await face('Shell')).toBeUndefined()
+  expect(await faceOf(ui, 'Shell')).toBeUndefined()
   await ui.unmount()
 })
 
-test('the suggestions are chips in one wrapping row, not a line each', async ($, on) => {
+test('the suggestions are pills in one wrapping row after a dim Try, with npm run said once and a colour for what they do', async ($, on) => {
   const process = { calls: [] as string[][], lines: [] }
-  engine(on, process)
+  engine(on, process, { 'package.json': '{"scripts":{"dev":"vite","test":"vitest","build":"tsc","start:ci":"x"}}' })
   await $.session.start({ cwd: '/w/sample-app', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const boxes = await ui.findAll({ type: 'Box' })
-  const row = boxes.find(box => box.props?.flexWrap === 'wrap' && /^Try.*npm run dev.*npm run test/.test(box.text ?? ''))
+  const row = boxes.find(box => box.props?.flexWrap === 'wrap' && /^Try\s*npm run\s*\u2590 dev \u258c/.test(box.text ?? ''))
   expect(row).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: ' npm run dev ' }))?.props?.backgroundColor).toBe('inactive')
+  // The words every one starts with are in the row once, not in each button.
+  expect(((row?.text ?? '').match(/npm run/g) ?? []).length).toBe(1)
+  expect((await faceOf(ui, 'dev'))?.label).toMatchObject({ backgroundColor: 'suggestion' })
+  expect((await faceOf(ui, 'start:ci'))?.label).toMatchObject({ backgroundColor: 'suggestion' })
+  expect((await faceOf(ui, 'test'))?.label).toMatchObject({ backgroundColor: 'success' })
+  expect((await faceOf(ui, 'build'))?.label).toMatchObject({ backgroundColor: 'inactive' })
+  // Pressing one still runs the whole command.
   expect(await ui.find({ key: 'hint:npm run dev' })).toBeDefined()
+  await ui.press({ key: 'hint:npm run test' })
+  await new Promise<void>(resolve => setTimeout(resolve, 30))
+  const got = String((await $.tool.call({ tool: 'mcp__run-pane__run_output' })).result)
+  expect(got).toContain('npm run test')
   await ui.unmount()
 })
 

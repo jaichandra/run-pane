@@ -5,6 +5,7 @@ import { candidatePaths, findLinks, isStyled, spansOf } from './ansi'
 import type { Span } from './ansi'
 import {
   descendants,
+  groupSuggestions,
   highlight,
   isInteractive,
   matchesAny,
@@ -13,6 +14,7 @@ import {
   RunLog,
   statusMark,
   stripAnsi,
+  suggestionKind,
   statusWords,
   suggestions,
   WRAPPER,
@@ -73,7 +75,7 @@ const STYLE: Record<Exclude<PartKind, 'plain' | 'url'>, { color?: string; dimCol
 
 // A button's face: the label on a background, so it reads as a control. The colours are theme keys, so they follow the
 // person's theme (`inverseText` is the text meant for a coloured ground).
-const TONES = { neutral: 'inactive', primary: 'suggestion', danger: 'error' } as const
+const TONES = { neutral: 'inactive', primary: 'suggestion', danger: 'error', success: 'success' } as const
 
 const folderName = (cwd: string): string => cwd.split('/').filter(Boolean).pop() ?? cwd
 
@@ -779,10 +781,15 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const tags = $.ui.resolve(e)
     const { Box, Text, Button } = tags
-    // What a button looks like: its label on a background, with a space each side.
+    // What a button looks like: its label on a background, a space each side, and half-block ends so it reads as a pill
+    // (a half block in the button's colour, on the pane's own background).
     const face = (label: string, tone: keyof typeof TONES = 'neutral'): JSX.Element => (
-      <Text color="inverseText" backgroundColor={TONES[tone]}>
-        {` ${label} `}
+      <Text>
+        <Text color={TONES[tone]}>{'\u2590'}</Text>
+        <Text color="inverseText" backgroundColor={TONES[tone]}>
+          {` ${label} `}
+        </Text>
+        <Text color={TONES[tone]}>{'\u258c'}</Text>
       </Text>
     )
     const Input = 'Input' in tags ? tags.Input : undefined
@@ -806,7 +813,8 @@ export const register: Register = on => {
     // The rows the output box has: the pane less what is drawn around it, counted high where it
     // wraps (the hint, the buttons), so scrolling stops with the first line at the top, not past it.
     // The suggestions are chips that wrap: about as many rows as their width fills.
-    const hintRows = hints.length > 0 ? 2 * Math.max(1, Math.ceil((4 + hints.reduce((sum, cmd) => sum + cmd.length + 3, 0)) / Math.max(20, e.props.bodyColumns - 2))) - 1 : 0
+    const hintWidth = 4 + groupSuggestions(hints).reduce((sum, group) => sum + (group.prefix ? group.prefix.length + 1 : 0) + group.items.reduce((inner, item) => inner + item.label.length + 5, 0), 0)
+    const hintRows = hints.length > 0 ? 2 * Math.max(1, Math.ceil(hintWidth / Math.max(20, e.props.bodyColumns - 2))) - 1 : 0
     const chrome =
       1 + (e.props.placement === 'inline' ? 4 : 0) + 1 + hintRows + Math.max(1, runs.length) + 3 + (e.props.bodyColumns < 80 ? 2 : 1)
     const visible = Math.max(1, rows - chrome)
@@ -947,11 +955,17 @@ export const register: Register = on => {
         {hints.length > 0 && (
           <Box flexWrap="wrap" columnGap={1} rowGap={1}>
             <Text dimColor>Try</Text>
-            {hints.map(cmd => (
-              <Button plain key={`hint:${cmd}`} label={cmd} onPress={() => go(cmd)}>
-                {face(cmd)}
-              </Button>
-            ))}
+            {groupSuggestions(hints).flatMap(group => [
+              ...(group.prefix ? [<Text dimColor key={`prefix:${group.prefix}:${group.items[0]?.cmd}`}>{group.prefix}</Text>] : []),
+              ...group.items.map(item => {
+                const kind = suggestionKind(item.cmd)
+                return (
+                  <Button plain key={`hint:${item.cmd}`} label={item.cmd} onPress={() => go(item.cmd)}>
+                    {face(item.label, kind === 'run' ? 'primary' : kind === 'test' ? 'success' : 'neutral')}
+                  </Button>
+                )
+              }),
+            ])}
           </Box>
         )}
         {runs.length === 0 && <Text dimColor>Nothing running. Pick a suggestion or type a command.</Text>}

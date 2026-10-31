@@ -229,6 +229,7 @@ test('in herdr /rp splits a pane on the right, types the command as it is and st
   expect((await gt($, 'npm test')).text).toContain('Started #1: npm test (in a herdr pane beside Claude Code)')
   expect(machine.opened).toEqual(['run'])
   expect(machine.spawned).toEqual([])
+  await untilOver($)
   expect(machine.calls.find(argv => argv[2] === 'split')).toEqual(['herdr', 'pane', 'split', '--current', '--direction', 'right', '--cwd', '/w/sample-app', '--no-focus'])
   // Nothing but the command, so the pane reads as the person's own shell.
   expect(machine.calls.find(argv => argv[2] === 'run')).toEqual(['herdr', 'pane', 'run', 'w1:p1', 'npm test'])
@@ -867,7 +868,8 @@ test('the Attach button has a space before it in the run row and a background', 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   const row = await ui.find({ type: 'Box', text: /vi package\.json.*running.*Attach/ })
   // `vi package.json running` then a space, then the button: "running [ Attach ]".
-  expect(row?.text).toMatch(/running\s+Attach/)
-  expect((await ui.find({ type: 'Text', text: ' Attach ' }))?.props?.backgroundColor).toBe('suggestion')
+  expect(row?.text).toMatch(/running\s+\u2590 Attach \u258c/)
+  const pill = (await ui.find({ type: 'Text', text: '\u2590 Attach \u258c' })) as { children?: { props?: Record<string, unknown> }[] } | undefined
+  expect(pill?.children?.[1]?.props?.backgroundColor).toBe('suggestion')
   await ui.unmount()
 })
